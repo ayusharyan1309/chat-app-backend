@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1.6.1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+        body { background: #f7f7f7; }
+        #chat-box { height: 400px; overflow-y: auto; background: #fff; border: 1px solid #ddd; padding: 1em; }
+        .chat-message { margin-bottom: 1em; }
+        .chat-message.me { text-align: right; }
+        .chat-message .sender { font-weight: bold; }
+    </style>
+</head>
+<body>
+<div class="container py-4">
+    <h2 class="mb-4">Chat</h2>
+    <div id="token-ui" class="mb-3">
+        <label for="token-input" class="form-label">Paste your Firebase Token</label>
+        <textarea id="token-input" class="form-control mb-2" rows="2" placeholder="Paste your Firebase ID token here..."></textarea>
+        <button id="connect-btn" class="btn btn-success">Connect</button>
+        <div id="login-email" style="margin-top: 0.5em; color: #2d7c2d; font-weight: bold; display: none;"></div>
+    </div>
+    <div id="user-list-ui" style="display:none;" class="mb-3">
+        <label class="form-label">Select a user to chat with:</label>
+        <div id="user-list" class="list-group"></div>
+    </div>
+    <div id="chat-ui" style="display:none;">
+        <div class="mb-2">
+            <label for="recipientEmail" class="form-label">Recipient Email</label>
+            <div class="input-group">
+                <input type="email" id="recipientEmail" class="form-control" placeholder="Enter recipient email" style="display:none;">
+                <button id="subscribe-recipient-btn" class="btn btn-outline-secondary" type="button" style="display:none;">Subscribe</button>
+            </div>
+        </div>
+        <div id="chat-box" class="mb-3"></div>
+        <div id="typing-indicator" style="font-style:italic; color:#888; display:none;">Recipient is typing...</div>
+        <form id="chat-form" class="d-flex">
+            <input type="text" id="message-input" class="form-control me-2" placeholder="Type a message..." autocomplete="off">
+            <button type="submit" class="btn btn-primary">Send</button>
+        </form>
+    </div>
+</div>
+<script>
+let stompClient = null;
+let currentToken = null;
+let currentUserEmail = null;
+let currentRecipientEmail = null;
+let typingTimeout = null;
+let messageSubscription = null;
+let userList = [];
+let unreadMessagesByUser = {};
+let conversationInfoByUser = {};
+let currentConversation = null;
+
+// --- Batching and Debounced Mark-as-Read Implementation ---
+const markAsReadBuffer = new Set();
+let markAsReadTimeout = null;
+const MARK_AS_READ_DEBOUNCE_MS = 1000; // 1 second debounce
+
+async function flushMarkAsReadBuffer() {
+    if (markAsReadTimeout) {
+        clearTimeout(markAsReadTimeout);
+        markAsReadTimeout = null;
+    }
+    if (markAsReadBuffer.size === 0) return;
+    const ids = Array.from(markAsReadBuffer);
+    markAsReadBuffer.clear();
+    await markMessagesAsRead(ids);
+}
+
+function queueMarkAsRead(messageId) {
+    if (!messageId) return;
+    markAsReadBuffer.add(messageId);
+    if (markAsReadTimeout) clearTimeout(markAsReadTimeout);
+    markAsReadTimeout = setTimeout(flushMarkAsReadBuffer, MARK_AS_READ_DEBOUNCE_MS);
+}
+
+function showLoginEmail(email) {
+    const loginDiv = document.getElementById('login-email');
+    if (email) {
+        loginDiv.textContent = `Logged in as: ${email}`;
+        loginDiv.style.display = '';
+    } else {
+        loginDiv.textContent = '';
+        loginDiv.style.display = 'none';
+    }
+}
+
+function updateUserListUIWithUnreadCounts() {
+    const userListDiv = document.getElementById('user-list');
+    userListDiv.innerHTML = '';
+    userList.forEach(user => {
+        if (user.email !== currentUserEmail) {
+            const btn = document.createElement('button');
+            btn.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+            btn.textContent = user.name + ' (' + user.email + ')';
+            // Add unread badge if any
+            const unreadCount = (unreadMessagesByUser[user.email] || []).length;
+            if (unreadCount > 0) {
+                const badge = document.createElement('span');
+                badge.className = 'badge bg-success rounded-pill ms-2';
+                badge.textContent = unreadCount;
+                btn.appendChild(badge);
+            }
+            btn.onclick = function() {
+                selectUserForChat(user.email);
+            };
+            userListDiv.appendChild(btn);
+        }
+    });
+    document.getElementById('user-list-ui').style.display = '';
+}
+
+function showUserList(users) {
+    userList = users;
+    updateUserListUIWithUnreadCounts();
+}
+
+async function fetchAllUnreadMessages() {
+    try {
+        let token = window.currentToken;
+        if (!token) return;
+        const response = await fetch('/chat/unread-messages', {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+            }
+        });
+        if (!response.ok) throw new Error('Failed to fetch unread messages');
+        const grouped = await response.json();
+        // Now grouped is: { senderEmail: { conversationId, status, user1Email, user2Email, messages: [ ... ] } }
+        unreadMessagesByUser = {};
+        conversationInfoByUser = {};
+        Object.keys(grouped).forEach(userEmail => {
+            const convObj = grouped[userEmail];
+            conversationInfoByUser[userEmail] = convObj;
+            unreadMessagesByUser[userEmail] = convObj.messages || [];
+        });
+        updateUserListUIWithUnreadCounts();
+    } catch (error) {
+        console.error('Error fetching unread messages:', error);
+    }
+}
+
+async function selectUserForChat(email) {
+    // Always fetch the latest conversation info when opening chat
+    let conversation = null;
+    try {
+        const userObj = userList.find(u => u.email === email);
+        if (userObj && userObj.id) {
+            const resp = await fetchWithToken(`/chat/conversation/with/${userObj.id}`);
+            if (resp.ok) {
+                conversation = await resp.json();
+                conversation.user1Id = conversation.user1Id;
+                conversation.user2Id = conversation.user2Id;
+                conversationInfoByUser[email] = conversation;
+            }
+        }
+    } catch (e) { console.error('Failed to fetch conversation:', e); }
+    showConversationStatusUI(conversation || conversationInfoByUser[email] || {});
+    currentRecipientEmail = email;
+    document.getElementById('chat-ui').style.display = '';
+    const unreadForUser = unreadMessagesByUser[email] || [];
+    if (unreadForUser.length > 0) {
+        displayMissedMessages(unreadForUser, email);
+        unreadForUser.forEach(m => queueMarkAsRead(m.messageId));
+        delete unreadMessagesByUser[email];
+        updateUserListUIWithUnreadCounts();
+    }
+    subscribeToRecipientMessages(email);
+    appendMessage(`You are now chatting with ${email}`, '', 'system');
+}
+
+function showConversationStatusUI(conversation) {
+    const chatBox = document.getElementById('chat-box');
+    let statusDiv = document.getElementById('conversation-status-ui');
+    if (!statusDiv) {
+        statusDiv = document.createElement('div');
+        statusDiv.id = 'conversation-status-ui';
+        chatBox.parentNode.insertBefore(statusDiv, chatBox);
+    }
+    statusDiv.innerHTML = '';
+    let isRecipient = false;
+    let isBlocked = false;
+    let isBlocker = false;
+    const currentUserObj = userList.find(u => u.email === currentUserEmail);
+    if (!conversation || !currentUserObj) return;
+    // Accept/Block UI only for recipient when status is INIT
+    if (conversation.status === 'INIT') {
+        if (currentUserObj.id === conversation.user2Id) {
+            isRecipient = true;
+        }
+        if (isRecipient) {
+            if (conversation.id && conversation.id !== 'undefined') {
+                statusDiv.innerHTML = `<button id="accept-btn" class="btn btn-success btn-sm">Accept</button> <button id="block-btn" class="btn btn-danger btn-sm">Block</button>`;
+                document.getElementById('accept-btn').onclick = function() {
+                    fetchWithToken(`/chat/conversation/${conversation.id}/accept`, {method: 'POST'})
+                        .then(r => r.ok ? (conversation.status = 'ACTIVE', showConversationStatusUI(conversation)) : alert('Failed to accept'));
+                };
+                document.getElementById('block-btn').onclick = function() {
+                    fetchWithToken(`/chat/conversation/${conversation.id}/block`, {method: 'POST'})
+                        .then(r => r.ok ? (conversation.status = 'INACTIVE', showConversationStatusUI(conversation)) : alert('Failed to block'));
+                };
+            } else {
+                statusDiv.innerHTML = '<span class="text-danger">Cannot accept/block: Conversation not initialized yet.</span>';
+            }
+        }
+    } else if (conversation.status === 'INACTIVE') {
+        // Blocked logic: Only the blocker cannot send, the blocked can send but server will ignore
+        if (currentUserObj.id === conversation.user1Id) {
+            isBlocker = true;
+        } else if (currentUserObj.id === conversation.user2Id) {
+            isBlocked = true;
+        }
+        if (isBlocker) {
+            statusDiv.innerHTML = `<span class="text-danger">You have blocked this user.</span> <button id="unblock-btn" class="btn btn-warning btn-sm">Unblock</button>`;
+            document.getElementById('unblock-btn').onclick = function() {
+                fetchWithToken(`/chat/conversation/${conversation.id}/accept`, {method: 'POST'})
+                    .then(r => r.ok ? (conversation.status = 'ACTIVE', showConversationStatusUI(conversation)) : alert('Failed to unblock'));
+            };
+            document.getElementById('message-input').disabled = true;
+        } else if (isBlocked) {
+            statusDiv.innerHTML = `<span class="text-danger">You are blocked by this user. You can send messages, but they will not be delivered.</span>`;
+            document.getElementById('message-input').disabled = false;
+        } else {
+            statusDiv.innerHTML = '';
+            document.getElementById('message-input').disabled = false;
+        }
+    } else {
+        statusDiv.innerHTML = '';
+        document.getElementById('message-input').disabled = false;
+    }
+}
+
+async function markMessagesAsRead(messageIds) {
+    if (!messageIds || messageIds.length === 0) return;
+    let token = window.currentToken;
+    try {
+        await fetch('/chat/mark-messages-read', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+            },
+            body: JSON.stringify(messageIds)
+        });
+    } catch (error) {
+        console.error('Failed to mark messages as read:', error);
+    }
+}
+
+function subscribeToRecipientMessages(recipientEmail) {
+    if (messageSubscription) {
+        messageSubscription.unsubscribe();
+        messageSubscription = null;
+    }
+    if (!stompClient || !recipientEmail) {
+        console.warn('No stompClient or recipientEmail for subscription');
+        return;
+    }
+    messageSubscription = stompClient.subscribe('/user/queue/messages', function (message) {
+        console.log("Received WebSocket message:", message.body);
+        const msg = JSON.parse(message.body);
+        appendMessage(
+            msg.content,
+            msg.senderUserEmail,
+            (msg.senderUserEmail === currentUserEmail ? 'me' : 'them')
+        );
+        // --- FIX: Batch mark as read ---
+        if (msg.senderUserEmail === currentRecipientEmail && msg.messageId) {
+            queueMarkAsRead(msg.messageId);
+            if (unreadMessagesByUser[currentRecipientEmail]) {
+                unreadMessagesByUser[currentRecipientEmail] = unreadMessagesByUser[currentRecipientEmail].filter(m => m.messageId !== msg.messageId);
+                updateUserListUIWithUnreadCounts();
+            }
+        }
+    }, {
+        chatWithEmail: recipientEmail
+    });
+    console.log('Subscribed to /user/queue/messages for recipient:', recipientEmail);
+}
+
+function appendMessage(content, sender, who) {
+    const chatBox = document.getElementById('chat-box');
+    const div = document.createElement('div');
+    if(who === 'system') {
+        div.className = 'chat-message text-center text-muted';
+        div.innerHTML = `<em>${content}</em>`;
+    } else {
+        div.className = 'chat-message ' + (who === 'me' ? 'me' : '');
+        div.innerHTML = `<span class="sender">${who === 'me' ? 'Me' : sender}:</span> ${content}`;
+    }
+    chatBox.appendChild(div);
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+function showTypingIndicator() {
+    const typingDiv = document.getElementById('typing-indicator');
+    typingDiv.style.display = '';
+    if (typingTimeout) clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(hideTypingIndicator, 2000);
+}
+function hideTypingIndicator() {
+    document.getElementById('typing-indicator').style.display = 'none';
+}
+
+function displayMissedMessages(messages, filterRecipientEmail) {
+    if (!messages || !messages.length) return;
+    messages.forEach(msg => {
+        // Only display messages from the currently selected recipient
+        if (!filterRecipientEmail || msg.senderUserEmail === filterRecipientEmail || msg.recipientEmail === filterRecipientEmail) {
+            const sender = msg.senderUserEmail || (msg.sender && msg.sender.fullName) || 'Unknown';
+            appendMessage(msg.message, sender, sender === currentUserEmail ? 'me' : 'them');
+        }
+    });
+    window.lastDisplayedMessageId = messages[messages.length - 1]?.messageId;
+}
+
+function connectWebSocket(token) {
+    const socket = new SockJS('/ws');
+    stompClient = Stomp.over(socket);
+    stompClient.connect({ 'Firebase-Token': token }, function (frame) {
+        console.log('Connected: ' + frame);
+        try {
+            const parts = token.split('.');
+            if (parts.length === 3) {
+                const payload = JSON.parse(atob(parts[1]));
+                currentUserEmail = payload.email || payload.user_email || null;
+                if(currentUserEmail) {
+                    showLoginEmail(currentUserEmail);
+                    fetch('/api/users', {headers: {"Authorization": `Bearer ${token}`}})
+                        .then(res => res.json())
+                        .then(users => {
+                            // Defensive: filter/map to ensure id and email are present
+                            userList = users.filter(u => u.id && u.email);
+                            showUserList(userList);
+                        })
+                        .catch(err => {
+                            alert('Failed to fetch user list: ' + err);
+                        });
+                }
+            }
+        } catch (e) {
+            console.error('Could not parse token for email', e);
+            showLoginEmail(null);
+        }
+        stompClient.subscribe('/user/queue/typing', function (typingMsg) {
+            const typing = JSON.parse(typingMsg.body);
+            if (typing.senderUsername === currentRecipientEmail && typing.typing) {
+                showTypingIndicator();
+            } else {
+                hideTypingIndicator();
+            }
+        });
+        document.getElementById('token-ui').style.display = 'none';
+        // Fetch all unread messages once
+        fetchAllUnreadMessages();
+    }, function(error) {
+        alert('WebSocket connection failed: ' + error);
+    });
+}
+
+// --- Conversation Status Handling ---
+function getValidToken() {
+    let token = window.currentToken || document.getElementById('token-input').value.trim();
+    if (!token || token.split('.').length !== 3) {
+        alert('Please paste a valid Firebase token (should have 3 dot-separated parts)!');
+        throw new Error('Invalid Firebase token');
+    }
+    return token;
+}
+
+function fetchWithToken(url, options = {}) {
+    const token = getValidToken();
+    options.headers = options.headers || {};
+    options.headers['Authorization'] = 'Bearer ' + token;
+    return fetch(url, options);
+}
+
+// --- Lazy loading previous messages on scroll ---
+let lastFetchedPage = 0;
+let hasMoreMessages = true;
+let isLoadingMessages = false;
+
+async function fetchPreviousMessages(conversationId, page = 0, size = 20) {
+    if (isLoadingMessages || !hasMoreMessages) return;
+    isLoadingMessages = true;
+    try {
+        const resp = await fetchWithToken(`/chat/conversation/${conversationId}/messages?page=${page}&size=${size}`);
+        if (resp.ok) {
+            const data = await resp.json();
+            if (Array.isArray(data.messages)) {
+                prependMessagesToChatBox(data.messages);
+                hasMoreMessages = data.hasMore;
+                lastFetchedPage = page;
+            }
+        }
+    } catch (e) { console.error('Failed to fetch previous messages:', e); }
+    isLoadingMessages = false;
+}
+
+function prependMessagesToChatBox(messages) {
+    const chatBox = document.getElementById('chat-box');
+    if (!messages || !messages.length) return;
+    messages.reverse().forEach(msg => {
+        const sender = msg.senderUserEmail || (msg.sender && msg.sender.fullName) || 'Unknown';
+        const div = document.createElement('div');
+        div.className = 'chat-message ' + (sender === currentUserEmail ? 'me' : '');
+        div.innerHTML = `<span class="sender">${sender}:</span> ${msg.message}`;
+        chatBox.insertBefore(div, chatBox.firstChild);
+    });
+}
+
+// Attach scroll event for lazy loading
+function attachChatBoxScroll(conversationId) {
+    const chatBox = document.getElementById('chat-box');
+    chatBox.onscroll = function() {
+        if (chatBox.scrollTop === 0 && hasMoreMessages) {
+            fetchPreviousMessages(conversationId, lastFetchedPage + 1);
+        }
+    };
+}
+
+// Patch selectUserForChat to reset lazy state and attach scroll
+const originalSelectUserForChat = selectUserForChat;
+selectUserForChat = async function(email) {
+    lastFetchedPage = 0;
+    hasMoreMessages = true;
+    isLoadingMessages = false;
+    await originalSelectUserForChat(email);
+    const conversation = conversationInfoByUser[email];
+    if (conversation && conversation.id) {
+        attachChatBoxScroll(conversation.id);
+        // Fetch first page of older messages
+        fetchPreviousMessages(conversation.id, 0);
+    }
+};
+
+window.addEventListener('DOMContentLoaded', function() {
+    const savedToken = localStorage.getItem('firebaseToken');
+    if (savedToken) {
+        window.currentToken = savedToken;
+        document.getElementById('token-input').value = savedToken;
+        // Optionally, auto-connect:
+        // connectWebSocket(savedToken);
+    }
+});
+
+document.getElementById('connect-btn').onclick = function() {
+    const token = document.getElementById('token-input').value.trim();
+    if (!token) {
+        alert('Please paste your Firebase token!');
+        return;
+    }
+    window.currentToken = token;
+    localStorage.setItem('firebaseToken', token);
+    connectWebSocket(token);
+};
+
+document.getElementById('chat-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    const messageInput = document.getElementById('message-input');
+    const content = messageInput.value.trim();
+    if (!content || !currentRecipientEmail) {
+        if (!content) console.warn('No message content entered');
+        if (!currentRecipientEmail) console.warn('No valid recipient selected');
+        alert('Please select a user and enter a message!');
+        return;
+    }
+    if (!currentUserEmail) {
+        alert('Your user email could not be determined from the token. Please check your token or contact support.');
+        console.error('currentUserEmail is not set. Cannot send message.');
+        return;
+    }
+    stompClient.send('/app/chat.send', {}, JSON.stringify({
+        senderUserEmail: currentUserEmail,
+        recipientEmail: currentRecipientEmail,
+        content: content
+    }));
+    appendMessage(content, 'Me', 'me');
+    messageInput.value = '';
+    hideTypingIndicator();
+});
+
+document.getElementById('message-input').addEventListener('input', function () {
+    if (!currentUserEmail || !currentRecipientEmail) return;
+    stompClient.send('/app/chat.typing', {}, JSON.stringify({
+        senderUsername: currentUserEmail,
+        recipientUsername: currentRecipientEmail,
+        typing: true
+    }));
+    if (typingTimeout) clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => {
+        stompClient.send('/app/chat.typing', {}, JSON.stringify({
+            senderUsername: currentUserEmail,
+            recipientUsername: currentRecipientEmail,
+            typing: false
+        }));
+        hideTypingIndicator();
+    }, 2000);
+});
+</script>
+</body>
+</html>

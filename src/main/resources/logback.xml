@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Include default Spring Boot configuration -->
+    <include resource="org/springframework/boot/logging/logback/base.xml"/>
+    <jmxConfigurator/>
+
+    <!-- Console Appender -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>[%thread] - %d %X %-5level %logger{35} - %msg%n%ex</pattern>
+        </encoder>
+    </appender>
+
+    <!-- File Appender for app.log -->
+    <appender name="SERVER_LOG_APPENDER" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <File>logs/app.log</File>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/%d{yyyy-MM-dd}/App-server.%d{yyyy-MM-dd}.%i.log.zip</fileNamePattern>
+            <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
+                <maxFileSize>200MB</maxFileSize>
+            </timeBasedFileNamingAndTriggeringPolicy>
+            <totalSizeCap>2GB</totalSizeCap>
+            <maxHistory>10</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>[%thread] - %d %X %-5level %logger{36} - %msg%n%ex</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Asynchronous Appender -->
+    <appender name="ASYNC_SERVER_LOG_APPENDER" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>2000</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <appender-ref ref="SERVER_LOG_APPENDER"/>
+        <appender-ref ref="STDOUT"/>
+    </appender>
+
+    <!-- Root Logger -->
+    <root level="info">
+        <appender-ref ref="STDOUT"/>
+        <appender-ref ref="ASYNC_SERVER_LOG_APPENDER"/>
+    </root>
+
+    <!-- Specific Loggers -->
+    <logger name="org.springframework" level="INFO" additivity="false">
+        <appender-ref ref="STDOUT"/>
+        <appender-ref ref="ASYNC_SERVER_LOG_APPENDER"/>
+    </logger>
+
+    <logger name="com.app.spicetrade" level="DEBUG" additivity="false">
+        <appender-ref ref="STDOUT"/>
+        <appender-ref ref="ASYNC_SERVER_LOG_APPENDER"/>
+    </logger>
+</configuration>
