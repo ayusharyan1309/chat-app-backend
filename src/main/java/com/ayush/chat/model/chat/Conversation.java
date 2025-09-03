@@ -41,4 +41,10 @@ public class Conversation {
 
     @Column(name = "updated_at")
     private Timestamp updatedAt;
+
+    @Column(name = "isBlockedByUser1")
+    private Boolean isBlockedByUser1 = false;
+
+    @Column(name = "isBlockedByUser2")
+    private Boolean isBlockedByUser2 = false;
 }

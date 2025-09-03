@@ -1,10 +1,10 @@
-package com.ayush.chat.kafka;
+package com.ayush.chat.kafka.kafka;
 
 import com.ayush.chat.dto.request.chat.ChatMessageDto;
 import com.ayush.chat.model.User;
 import com.ayush.chat.model.chat.Message;
 import com.ayush.chat.repository.UserRepository;
-import com.ayush.chat.service.chat.MessageService;
+import com.ayush.chat.service.chat.MessageServiceImpl;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -14,11 +14,13 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class ChatKafkaConsumer {
     @Autowired
-    private MessageService messageService;
+    private MessageServiceImpl messageServiceImpl;
     @Autowired
     private SimpMessagingTemplate messagingTemplate;
     @Autowired
     private UserRepository userRepository;
+    @Autowired
+    private CrossPlatformProducer crossPlatformProducer;
 
     @KafkaListener(topics = "chat-messages", groupId = "chat-group")
     @Transactional
@@ -26,12 +28,14 @@ public class ChatKafkaConsumer {
         User sender = userRepository.findByEmail(chatMessageDto.getSenderUserEmail());
         User recipient = userRepository.findByEmail(chatMessageDto.getRecipientEmail());
         if (sender == null || recipient == null) return;
-        Message message = messageService.sendMessage(sender, recipient, chatMessageDto.getContent());
+        Message message = messageServiceImpl.saveMessage(sender, recipient, chatMessageDto.getContent());
         chatMessageDto.setMessageId(message.getId());
-        messagingTemplate.convertAndSendToUser(
-            chatMessageDto.getRecipientEmail(),
-            "/queue/messages",
-            chatMessageDto
-        );
+
+            messagingTemplate.convertAndSendToUser(
+                    chatMessageDto.getRecipientEmail(),
+                    "/queue/messages",
+                    chatMessageDto
+            );
+
     }
 }

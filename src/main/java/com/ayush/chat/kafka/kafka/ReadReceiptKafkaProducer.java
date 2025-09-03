@@ -1,4 +1,4 @@
-package com.ayush.chat.kafka;
+package com.ayush.chat.kafka.kafka;
 
 import com.ayush.chat.dto.request.chat.ReadReceiptDto;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,7 +15,7 @@ public class ReadReceiptKafkaProducer {
     }
 
 
-    /// TODO  appUserID + # unique something
+    // TODO  appUserID + # orgId or
     public void sendReadReceipt(ReadReceiptDto receipt) {
         kafkaTemplate.send("chat-read-receipts",receipt.getUserEmail(), receipt);
     }

@@ -32,4 +32,5 @@ public interface UserRepository extends PagingAndSortingRepository<User, Long> {
     Optional<User> findByUserEmail(@Param("email") String email);
 
 
+    User findById(Long otherId);
 }

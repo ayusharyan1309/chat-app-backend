@@ -51,3 +51,11 @@ Caused by: java.lang.IllegalArgumentException: dataSource or dataSourceClassName
 	at liquibase.Scope.child(Scope.java:179)
 	at liquibase.integration.spring.SpringLiquibase.afterPropertiesSet(SpringLiquibase.java:271)
 	... 19 common frames omitted
+[main] - 2025-09-03 20:11:34,347  INFO  com.ayush.chat.ChatApplication - Starting ChatApplication using Java 17.0.14 with PID 23988 (C:\Users\ayush\Downloads\chat\target\classes started by ayush in C:\Users\ayush\Downloads\chat)
+[main] - 2025-09-03 20:11:34,363  INFO  com.ayush.chat.ChatApplication - No active profile set, falling back to 1 default profile: "default"
+[main] - 2025-09-03 20:11:35,593  INFO  o.s.d.r.c.RepositoryConfigurationDelegate - Bootstrapping Spring Data JPA repositories in DEFAULT mode.
+[main] - 2025-09-03 20:11:35,657  INFO  o.s.d.r.c.RepositoryConfigurationDelegate - Finished Spring Data repository scanning in 52 ms. Found 4 JPA repository interfaces.
+[main] - 2025-09-03 20:11:36,961  INFO  o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8080 (http)
+[main] - 2025-09-03 20:11:37,072  INFO  o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 2654 ms
+[main] - 2025-09-03 20:11:37,370  ERROR com.zaxxer.hikari.HikariConfig - HikariPool-1 - dataSource or dataSourceClassName or jdbcUrl is required.
+[main] - 2025-09-03 20:11:37,370  WARN  o.s.b.w.s.c.AnnotationConfigServletWebServerApplicationContext - Exception encountered during context initialization - cancelling refresh attempt: org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'entityManagerFactory' defined in class path resource [com/ayush/chat/config/STDBConfig.class]: Failed to initialize dependency 'liquibase' of LoadTimeWeaverAware bean 'entityManagerFactory': Error creating bean with name 'liquibase' defined in class path resource [org/springframework/boot/autoconfigure/liquibase/LiquibaseAutoConfiguration$LiquibaseConfiguration.class]: java.lang.IllegalArgumentException: dataSource or dataSourceClassName or jdbcUrl is required.

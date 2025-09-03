@@ -40,11 +40,11 @@ public class MessageDto {
     public static MessageDto fromEntity(Message msg) {
         if (msg == null) return null;
         return new MessageDto(
-            msg.getId(),
-            msg.getMessage(),
-            msg.getSender() != null ? msg.getSender().getEmail() : null,
-            msg.getReceiver() != null ? msg.getReceiver().getEmail() : null,
-            msg.getCreatedAt()
+                msg.getId(),
+                msg.getMessage(),
+                msg.getSender() != null ? msg.getSender().getEmail() : null,
+                msg.getReceiver() != null ? msg.getReceiver().getEmail() : null,
+                msg.getCreatedAt()
         );
     }
 }
