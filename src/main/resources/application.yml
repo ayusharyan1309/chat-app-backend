@@ -131,6 +131,73 @@ cors:
   allowed-headers: "*"
   allow-credentials: true
 
+# ============================================================
+# CHAT STORAGE CONFIGURATION
+# ============================================================
+# Switch the storage backend by changing 'type' below.
+# Supported: mysql, postgresql, mongodb, firebase, supabase, h2
+# ============================================================
+chat:
+  storage:
+    # The storage backend type for chat data
+    # Change this single value to switch between databases!
+    type: ${CHAT_STORAGE_TYPE:h2}  # mysql | postgresql | mongodb | firebase | supabase | h2
+    
+    # Prefix for all chat tables/collections (useful for multi-tenant isolation)
+    collection-prefix: ${CHAT_STORAGE_PREFIX:chat_}
+    
+    # Enable audit logging for storage operations
+    enable-audit: true
+    
+    # Retry attempts for failed operations
+    retry-attempts: 3
+    
+    # Connection timeout in milliseconds
+    connection-timeout: 30000
+    
+    # ----------------------------------------------------------
+    # SQL Configuration (MySQL, PostgreSQL, H2)
+    # ----------------------------------------------------------
+    sql:
+      url: ${CHAT_SQL_URL:jdbc:h2:mem:chat_storage}
+      username: ${CHAT_SQL_USERNAME:sa}
+      password: ${CHAT_SQL_PASSWORD:}
+      driver-class-name: ${CHAT_SQL_DRIVER:org.h2.Driver}
+      pool-size: ${CHAT_SQL_POOL_SIZE:20}
+      min-idle: 5
+      connection-timeout: 30000
+    
+    # ----------------------------------------------------------
+    # MongoDB Configuration
+    # ----------------------------------------------------------
+    mongodb:
+      # Full connection URI (overrides host/port/database)
+      uri: ${CHAT_MONGO_URI:}
+      # Individual connection settings (used if URI is not set)
+      host: ${CHAT_MONGO_HOST:localhost}
+      port: ${CHAT_MONGO_PORT:27017}
+      database: ${CHAT_MONGO_DATABASE:chat_db}
+      username: ${CHAT_MONGO_USERNAME:}
+      password: ${CHAT_MONGO_PASSWORD:}
+      auth-database: ${CHAT_MONGO_AUTH_DB:admin}
+    
+    # ----------------------------------------------------------
+    # Firebase Firestore Configuration
+    # ----------------------------------------------------------
+    firebase:
+      project-id: ${CHAT_FIREBASE_PROJECT_ID:}
+      credential-path: ${CHAT_FIREBASE_CREDENTIAL_PATH:firebase-service-account.json}
+      firestore-database: ${CHAT_FIREBASE_DB:(default)}
+    
+    # ----------------------------------------------------------
+    # Supabase Configuration
+    # ----------------------------------------------------------
+    supabase:
+      url: ${CHAT_SUPABASE_URL:}
+      api-key: ${CHAT_SUPABASE_API_KEY:}
+      anon-key: ${CHAT_SUPABASE_ANON_KEY:}
+      schema: ${CHAT_SUPABASE_SCHEMA:public}
+
 ---
 # Development Profile
 spring:
@@ -156,6 +223,58 @@ spring:
 logging:
   level:
     com.ayush.chat: DEBUG
+
+---
+# MongoDB Profile
+# Use: --spring.profiles.active=dev,mongodb
+# Or set: CHAT_STORAGE_TYPE=mongodb
+spring:
+  config:
+    activate:
+      on-profile: mongodb
+
+# Automatically switches chat storage to MongoDB
+chat:
+  storage:
+    type: mongodb
+    mongodb:
+      host: ${CHAT_MONGO_HOST:localhost}
+      port: ${CHAT_MONGO_PORT:27017}
+      database: ${CHAT_MONGO_DATABASE:chat_db}
+
+---
+# MySQL Profile
+# Use: --spring.profiles.active=dev,mysql
+spring:
+  config:
+    activate:
+      on-profile: mysql
+
+chat:
+  storage:
+    type: mysql
+    sql:
+      url: jdbc:mysql://${CHAT_MYSQL_HOST:localhost}:${CHAT_MYSQL_PORT:3306}/${CHAT_MYSQL_DB:chat_storage}
+      username: ${CHAT_MYSQL_USERNAME:root}
+      password: ${CHAT_MYSQL_PASSWORD:}
+      driver-class-name: com.mysql.cj.jdbc.Driver
+
+---
+# PostgreSQL Profile
+# Use: --spring.profiles.active=dev,postgresql
+spring:
+  config:
+      activate:
+          on-profile: postgresql
+
+chat:
+  storage:
+    type: postgresql
+    sql:
+      url: jdbc:postgresql://${CHAT_PG_HOST:localhost}:${CHAT_PG_PORT:5432}/${CHAT_PG_DB:chat_storage}
+      username: ${CHAT_PG_USERNAME:postgres}
+      password: ${CHAT_PG_PASSWORD:}
+      driver-class-name: org.postgresql.Driver
 
 ---
 # Production Profile

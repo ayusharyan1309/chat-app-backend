@@ -7,6 +7,7 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.annotation.Pointcut;
+import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.stereotype.Component;
 
 /**
@@ -48,7 +49,8 @@ public class FeatureToggleAspect {
     }
 
     private Object getDefaultReturnValue(ProceedingJoinPoint joinPoint) {
-        Class<?> returnType = joinPoint.getSignature().getReturnType();
+        MethodSignature signature = (MethodSignature) joinPoint.getSignature();
+        Class<?> returnType = signature.getReturnType();
         if (returnType.isPrimitive()) {
             if (returnType == boolean.class) return false;
             if (returnType == int.class) return 0;

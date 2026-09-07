@@ -32,14 +32,14 @@ public class TenantConnectionProvider implements MultiTenantConnectionProvider {
     }
 
     @Override
-    public Connection getConnection(String tenantIdentifier) throws SQLException {
+    public Connection getConnection(Object tenantIdentifier) throws SQLException {
         log.debug("Getting connection for tenant: {}", tenantIdentifier);
-        DataSource dataSource = dynamicDataSourceConfig.getDataSource(tenantIdentifier);
+        DataSource dataSource = dynamicDataSourceConfig.getDataSource(String.valueOf(tenantIdentifier));
         return dataSource.getConnection();
     }
 
     @Override
-    public void releaseConnection(String tenantIdentifier, Connection connection) throws SQLException {
+    public void releaseConnection(Object tenantIdentifier, Connection connection) throws SQLException {
         log.debug("Releasing connection for tenant: {}", tenantIdentifier);
         connection.close();
     }

@@ -280,7 +280,7 @@ public class TenantService {
     }
 
     private void initializeTenantFeatures(Tenant tenant) {
-        Set<FeatureModule> defaultFeatures = FeatureModule.getDefaultModules();
+        List<FeatureModule> defaultFeatures = FeatureModule.getDefaultModules();
         for (FeatureModule module : defaultFeatures) {
             TenantFeature tenantFeature = TenantFeature.builder()
                     .tenant(tenant)

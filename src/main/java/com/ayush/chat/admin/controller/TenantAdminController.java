@@ -261,14 +261,14 @@ public class TenantAdminController {
         // Count by plan type
         Map<String, Long> planCounts = new LinkedHashMap<>();
         for (String plan : Arrays.asList("FREE", "BASIC", "PRO", "ENTERPRISE")) {
-            planCounts.put(plan, tenantService.getTenantsByPlan(plan).size());
+            planCounts.put(plan, (long) tenantService.getTenantsByPlan(plan).size());
         }
         stats.put("tenantsByPlan", planCounts);
         
         // Count by status
         Map<String, Long> statusCounts = new LinkedHashMap<>();
         for (String status : Arrays.asList("ACTIVE", "SUSPENDED", "TRIAL")) {
-            statusCounts.put(status, tenantRepository.findByStatus(status).size());
+            statusCounts.put(status, (long) tenantRepository.findByStatus(status).size());
         }
         stats.put("tenantsByStatus", statusCounts);
         

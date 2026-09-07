@@ -16,6 +16,7 @@
 
 	<properties>
 		<java.version>17</java.version>
+		<lombok.version>1.18.34</lombok.version>
 		<springdoc.version>2.3.0</springdoc.version>
 		<mapstruct.version>1.5.5.Final</mapstruct.version>
 	</properties>
@@ -70,7 +71,6 @@
 		<dependency>
 			<groupId>org.mongodb</groupId>
 			<artifactId>mongodb-driver-sync</artifactId>
-			<scope>runtime</scope>
 		</dependency>
 
 		<!-- Connection Pooling -->
@@ -195,6 +195,13 @@
 		<dependency>
 			<groupId>com.github.ben-manes.caffeine</groupId>
 			<artifactId>caffeine</artifactId>
+		</dependency>
+
+		<!-- JSON Library -->
+		<dependency>
+			<groupId>org.json</groupId>
+			<artifactId>json</artifactId>
+			<version>20231013</version>
 		</dependency>
 
 		<!-- Testing -->

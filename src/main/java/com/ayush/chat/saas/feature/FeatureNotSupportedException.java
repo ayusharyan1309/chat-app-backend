@@ -6,7 +6,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 /**
  * Exception thrown when a feature is not enabled for the current tenant.
  */
-@HttpStatus(HttpStatus.FORBIDDEN)
+@ResponseStatus(HttpStatus.FORBIDDEN)
 public class FeatureNotSupportedException extends RuntimeException {
     
     public FeatureNotSupportedException(String message) {

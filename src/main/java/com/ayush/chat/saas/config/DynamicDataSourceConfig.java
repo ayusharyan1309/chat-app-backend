@@ -94,7 +94,9 @@ public class DynamicDataSourceConfig {
         DataSource dataSource = tenantDataSources.remove(tenantIdentifier);
         if (dataSource != null) {
             try {
-                dataSource.close();
+                if (dataSource instanceof HikariDataSource hikariDataSource) {
+                    hikariDataSource.close();
+                }
             } catch (Exception e) {
                 log.error("Error closing data source for tenant: {}", tenantIdentifier, e);
             }
