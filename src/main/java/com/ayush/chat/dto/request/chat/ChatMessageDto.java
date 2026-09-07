@@ -3,7 +3,7 @@ package com.ayush.chat.dto.request.chat;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Generated;
-import org.apache.logging.log4j.core.config.plugins.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotBlank;
 
 public class ChatMessageDto {
     private @NotBlank String recipientEmail;

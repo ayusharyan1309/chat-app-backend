@@ -1,265 +1,211 @@
-# 💬 Chat App Backend
+# Chat SaaS Platform
 
-A production-grade real-time chat application backend built with Spring Boot, WebSocket (STOMP), and Firebase Authentication. Supports real-time messaging, typing indicators, read receipts, file sharing via S3, and event-driven architecture with Apache Kafka.
+A multi-tenant SaaS chat platform built with Spring Boot, supporting configurable databases, features, and branding per tenant.
 
----
+## Features
 
-## ✨ Features
+- **Multi-Tenant Architecture**: Complete data isolation between tenants
+- **Configurable Database**: Support for MySQL, PostgreSQL, H2, and MongoDB
+- **Feature Flags**: Enable/disable features per tenant at runtime
+- **Subscription Management**: Built-in billing and plan management
+- **White-Labeling**: Custom branding and theming per tenant
+- **Scalable**: Designed for horizontal scaling with Kubernetes
 
-- 🔌 **Real-time WebSocket Messaging** — STOMP protocol for instant message delivery
-- 🔐 **Firebase Authentication** — Secure phone/email-based auth with JWT tokens
-- 📩 **Typing Indicators** — Real-time "typing..." status for conversations
-- ✅ **Read Receipts** — Track when messages are seen
-- 🚫 **Block/Unblock Users** — Full user blocking support
-- 📎 **File Sharing** — Upload and share files via AWS S3
-- 📱 **QR Code Generation** — Generate QR codes for user profiles
-- 📊 **Structured Logging** — Custom logger for audit trails
-- 🗄️ **MySQL + Liquibase** — Database with version-controlled migrations
-- 🔐 **Jasypt Encryption** — Encrypted sensitive configuration values
-- 🐦 **Apache Kafka** — Event-driven messaging for scalable message processing
-- 🏗️ **Spring Security** — Role-based access control
-
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                   Chat App Backend                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────────┐    ┌────────────────┐    ┌──────────────┐   │
-│  │   Client      │◄──▶│  WebSocket     │◄──▶│  Message     │   │
-│  │   (Mobile/    │    │  STOMP Server  │    │  Service     │   │
-│  │    Web)       │    └────────────────┘    └──────┬───────┘   │
-│  └──────┬───────┘                                  │           │
-│         │                                         │           │
-│         ▼                                         ▼           │
-│  ┌──────────────┐    ┌────────────────┐    ┌──────────────┐   │
-│  │   REST API    │    │  Firebase Auth  │    │  Apache Kafka│   │
-│  │   Controllers │    │  (JWT Tokens)  │    │  (Events)    │   │
-│  └──────┬───────┘    └────────────────┘    └──────┬───────┘   │
-│         │                                         │           │
-│         ▼                                         ▼           │
-│  ┌──────────────┐    ┌────────────────┐    ┌──────────────┐   │
-│  │   MySQL       │    │  AWS S3         │    │  Liquibase   │   │
-│  │   Database    │    │  (File Storage) │    │  (Migrations)│   │
-│  └──────────────┘    └────────────────┘    └──────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
 - Java 17+
-- MySQL 8.0+
-- Firebase project with Authentication enabled
-- AWS S3 bucket (for file storage)
-- Apache Kafka (optional, for event-driven messaging)
+- Maven 3.8+
+- MySQL 8.0+ (or Docker)
 
-### Setup
+### Running with Docker
 
 ```bash
-# Clone the repo
-git clone https://github.com/ayusharyan1309/chat-app-backend.git
-cd chat-app-backend
+# Start the platform
+docker-compose up -d
 
-# Configure database
-# Edit src/main/resources/application.properties
-
-# Run database migrations (Liquibase)
-mvn spring-boot:run
+# Access the application
+# API: http://localhost:8080
+# Swagger: http://localhost:8080/swagger-ui.html
+# H2 Console (dev): http://localhost:8080/h2-console
 ```
 
-### Configuration
+### Running Locally
 
-```properties
-# Database
-spring.datasource.url=jdbc:mysql://localhost:3306/chat_db
-spring.datasource.username=root
-spring.datasource.password=your_password
+```bash
+# Clone the repository
+git clone https://github.com/your-repo/chat-saas.git
+cd chat-saas
 
-# Firebase
-firebase.config.path=firebase-service-account.json
+# Run with dev profile
+mvn spring-boot:run -Dspring-boot.run.profiles=dev
 
-# AWS S3
-aws.access-key-id=your_access_key
-aws.secret-access-key=your_secret_key
-aws.s3.bucket=your_bucket_name
+# Or build and run
+mvn clean package
+java -jar target/chat-saas-1.0.0-SNAPSHOT.jar --spring.profiles.active=dev
 ```
 
----
+## API Documentation
 
-## 📦 Project Structure
+Once running, access the Swagger UI:
+- **URL**: http://localhost:8080/swagger-ui.html
+- **API Docs**: http://localhost:8080/v3/api-docs
 
-```
-chat-app-backend/
-├── src/main/java/com/ayush/chat/
-│   ├── ChatApplication.java          # Entry point
-│   ├── config/                       # Spring configuration classes
-│   ├── constant/                     # Application constants
-│   ├── controller/chat/
-│   │   └── ChatController.java       # REST + WebSocket endpoints
-│   ├── dto/                          # Data Transfer Objects
-│   │   └── request/chat/             # Chat request DTOs
-│   ├── exception/                    # Custom exception handling
-│   ├── kafka/kafka/                  # Kafka producers/consumers
-│   ├── model/
-│   │   ├── User.java                 # User entity
-│   │   ├── Role.java                 # User roles
-│   │   ├── chat/                     # Chat-related entities
-│   │   └── logger/                   # Log entities
-│   ├── repository/                   # JPA repositories
-│   ├── security/
-│   │   └── ChatPrincipal.java        # Security principal
-│   ├── service/
-│   │   ├── chat/                     # Chat business logic
-│   │   ├── LoggerService.java        # Structured logging
-│   │   ├── STExecutorService.java    # Async executor
-│   │   ├── UserService.java          # User service interface
-│   │   └── UserServiceImpl.java      # User service implementation
-│   ├── util/
-│   │   └── ThreadMemory.java         # Thread-local storage
-│   └── websocket/
-│       ├── ChatSubscriptionEventListener.java
-│       └── ChatSubscriptionRegistry.java
-├── src/main/resources/
-│   ├── application.properties
-│   └── db/changelog/                 # Liquibase migrations
-├── pom.xml
-└── mvnw / mvnw.cmd
+## Tenant Management
+
+### Create a New Tenant
+
+```bash
+curl -X POST http://localhost:8080/api/admin/tenants \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenantName": "Acme Corp",
+    "displayName": "Acme Corporation",
+    "contactEmail": "admin@acme.com",
+    "databaseType": "POSTGRESQL",
+    "planType": "PRO"
+  }'
 ```
 
----
+### Enable Features for Tenant
 
-## 📊 API Endpoints
-
-### WebSocket Topics
-
-| Endpoint | Description |
-|----------|-------------|
-| `/chat.send` | Send a new message |
-| `/chat.typing` | Typing indicator |
-| `/chat/read-receipt` | Read receipt |
-
-### REST Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/chat/unread-messages` | Get unread messages count |
-| `POST` | `/chat/mark-messages-read` | Mark messages as read |
-| `GET` | `/chat/conversation/with/{userId}` | Get conversation with user |
-| `POST` | `/chat/conversation/{id}/accept` | Accept conversation request |
-| `GET` | `/chat/conversation/{id}/messages` | Get paginated messages |
-| `POST` | `/chat/conversation/{id}/block` | Block user |
-| `POST` | `/chat/conversation/{id}/unblock` | Unblock user |
-| `GET` | `/chat/friends-chats` | Get all friend chats |
-
----
-
-## 🔐 Authentication
-
-Uses **Firebase Authentication** with JWT tokens:
-
-```java
-// WebSocket (STOMP with SockJS)
-@MessageMapping("/chat.send")
-public void sendMessage(@Payload ChatMessageDto dto, ChatPrincipal principal) {
-    // principal is auto-resolved from Firebase token
-}
-
-// REST API (Bearer token)
-@GetMapping("/chat/unread-messages")
-public ResponseEntity<?> getUnreadMessages(@RequestHeader("Authorization") String authHeader) {
-    // Token verified via Firebase Admin SDK
-}
+```bash
+curl -X PUT http://localhost:8080/api/admin/tenants/1/features \
+  -H "Content-Type: application/json" \
+  -d '{
+    "features": ["core-chat", "video-calls", "ai-translation"]
+  }'
 ```
 
----
+### Update Tenant Database
 
-## 🛠️ Tech Stack
-
-| Technology | Purpose |
-|------------|---------|
-| Spring Boot 3.5 | Core framework |
-| Spring WebSocket | Real-time messaging (STOMP) |
-| Spring Security | Authentication & authorization |
-| Firebase Auth | Phone/email-based user auth |
-| MySQL | Primary database |
-| Liquibase | Database migrations |
-| Apache Kafka | Event-driven messaging |
-| AWS S3 | File/image storage |
-| Jasypt | Encrypted configuration |
-| Lombok | Boilerplate reduction |
-| ZXing | QR code generation |
-| BCrypt | Password hashing |
-
----
-
-## 📋 Database Schema
-
-Managed by **Liquibase** — automatic migrations on startup:
-
-```sql
--- Users table
-CREATE TABLE users (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    mobile VARCHAR(20),
-    name VARCHAR(100),
-    profile_image VARCHAR(500),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Conversations
-CREATE TABLE conversations (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    type ENUM('DIRECT', 'GROUP'),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Messages
-CREATE TABLE messages (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    conversation_id BIGINT,
-    sender_id BIGINT,
-    content TEXT,
-    type ENUM('TEXT', 'IMAGE', 'FILE'),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-);
+```bash
+curl -X PUT http://localhost:8080/api/admin/tenants/1/database \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dbHost": "db.acme.com",
+    "dbPort": 5432,
+    "dbName": "acme_chat",
+    "dbUsername": "admin",
+    "dbPassword": "secret"
+  }'
 ```
 
----
+## Tenant-Aware API Usage
 
-## 🚀 Deployment
+All API calls require the `X-Tenant-ID` header:
 
-### Docker
-
-```dockerfile
-FROM eclipse-temurin:17-jre-jammy
-COPY target/chat-0.0.1-SNAPSHOT.jar app.jar
-EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
+```bash
+# Send a message
+curl -X POST http://localhost:8080/api/chat/messages \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: acme-corp" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "recipientEmail": "user@acme.com",
+    "message": "Hello!"
+  }'
 ```
+
+## Configuration
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `SPRING_DATASOURCE_URL` | MySQL JDBC URL |
-| `SPRING_DATASOURCE_USERNAME` | Database username |
-| `SPRING_DATASOURCE_PASSWORD` | Database password |
-| `FIREBASE_CONFIG_PATH` | Path to Firebase service account JSON |
-| `AWS_ACCESS_KEY_ID` | AWS access key |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
-| `AWS_S3_BUCKET` | S3 bucket name |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DB_MASTER_HOST` | Master database host | localhost |
+| `DB_MASTER_PORT` | Master database port | 3306 |
+| `DB_MASTER_NAME` | Master database name | chat_saas_master |
+| `DB_MASTER_USERNAME` | Master DB username | root |
+| `DB_MASTER_PASSWORD` | Master DB password | - |
+| `REDIS_HOST` | Redis host | localhost |
+| `REDIS_PORT` | Redis port | 6379 |
+| `KAFKA_BOOTSTRAP_SERVERS` | Kafka servers | localhost:9092 |
 
----
+### Subscription Plans
 
-## 📄 License
+| Plan | Price | Users | Storage | Messages/Day |
+|------|-------|-------|---------|--------------|
+| Free | $0 | 5 | 1GB | 100 |
+| Basic | $9.99/mo | 50 | 10GB | 5,000 |
+| Pro | $29.99/mo | 200 | 50GB | 50,000 |
+| Enterprise | Custom | 1,000+ | 200GB+ | 100,000+ |
 
-MIT
+## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
+
+### Project Structure
+
+```
+src/main/java/com/ayush/chat/
+├── admin/           # Admin API endpoints
+├── chat/            # Core chat functionality
+├── config/          # Configuration classes
+├── kafka/           # Kafka integration
+├── model/           # JPA entities
+├── repository/      # Data repositories
+├── saas/            # SaaS-specific code
+│   ├── config/      # Dynamic database config
+│   ├── feature/     # Feature flag system
+│   ├── subscription/# Billing & plans
+│   └── tenant/      # Multi-tenant support
+├── security/        # Authentication
+├── service/         # Business logic
+└── websocket/       # WebSocket handlers
+```
+
+## Development
+
+### Adding a New Feature Module
+
+1. Add enum to `FeatureModule.java`:
+```java
+NEW_MODULE("new-module", "Description", false);
+```
+
+2. Annotate your service:
+```java
+@RequiresFeature(FeatureModule.NEW_MODULE)
+public void newFeature() { ... }
+```
+
+3. Enable via API:
+```bash
+PUT /api/admin/tenants/{id}/features
+{"features": ["core-chat", "new-module"]}
+```
+
+### Running Tests
+
+```bash
+# Unit tests
+mvn test
+
+# Integration tests
+mvn verify -P integration
+```
+
+## Deployment
+
+### Docker
+
+```bash
+docker build -t chat-saas .
+docker run -p 8080:8080 chat-saas
+```
+
+### Kubernetes
+
+```bash
+kubectl apply -f k8s/
+```
+
+### AWS/Azure/GCP
+
+See deployment guides in `/docs/deployment/`
+
+## License
+
+MIT License - see [LICENSE](LICENSE) for details
