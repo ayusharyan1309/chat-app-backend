@@ -57,10 +57,16 @@ export const LoginPage: React.FC = () => {
         </form>
 
         <div style={styles.footer}>
+          <button
+            style={styles.devBtn}
+            onClick={() => login('dev@test.com', 'dev-token')}
+          >
+            🚀 Quick Dev Login (no auth)
+          </button>
           <p style={styles.hint}>
             Use your Firebase ID token for authentication.
             <br />
-            Contact your admin if you don't have one.
+            Or use Dev Login for testing.
           </p>
         </div>
       </div>
@@ -121,6 +127,18 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: '8px',
   },
   footer: { marginTop: '24px', textAlign: 'center' },
+  devBtn: {
+    width: '100%',
+    padding: '12px',
+    backgroundColor: '#00b894',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '10px',
+    fontSize: '14px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    marginBottom: '16px',
+  },
   hint: { fontSize: '12px', color: '#888', lineHeight: '1.6' },
 };
 
