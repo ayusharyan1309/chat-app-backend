@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import DatabaseConfigPanel from '../components/DatabaseConfig/DatabaseConfigPanel';
 import PlatformDbPanel from '../components/DatabaseConfig/PlatformDbPanel';
 import { useApp } from '../context/AppContext';
 
 export const ConfigPage: React.FC = () => {
   const { logout, currentUser } = useApp();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'database' | 'platforms'>('database');
 
   return (
@@ -15,6 +17,7 @@ export const ConfigPage: React.FC = () => {
           <span style={styles.logo}>⚙️ Configuration</span>
         </div>
         <div style={styles.topBarRight}>
+          <button style={styles.chatBtn} onClick={() => navigate('/chat')}>💬 Chat</button>
           <span style={styles.userEmail}>{currentUser?.email}</span>
           <button style={styles.logoutBtn} onClick={logout}>Logout</button>
         </div>
@@ -70,6 +73,15 @@ const styles: Record<string, React.CSSProperties> = {
   logo: { fontSize: '18px', fontWeight: 'bold' },
   topBarRight: { display: 'flex', alignItems: 'center', gap: '16px' },
   userEmail: { fontSize: '13px', opacity: 0.8 },
+  chatBtn: {
+    padding: '6px 16px',
+    backgroundColor: 'transparent',
+    border: '1px solid rgba(255,255,255,0.3)',
+    color: '#fff',
+    borderRadius: '6px',
+    fontSize: '13px',
+    cursor: 'pointer',
+  },
   logoutBtn: {
     padding: '6px 16px',
     backgroundColor: 'transparent',

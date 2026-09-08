@@ -1,4 +1,5 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import ConversationList from '../components/Chat/ConversationList';
 import MessageList from '../components/Chat/MessageList';
 import MessageInput from '../components/Chat/MessageInput';
@@ -6,6 +7,7 @@ import { useApp } from '../context/AppContext';
 
 export const ChatPage: React.FC = () => {
   const { currentUser, logout, wsConnected } = useApp();
+  const navigate = useNavigate();
 
   return (
     <div style={styles.container}>
@@ -19,6 +21,7 @@ export const ChatPage: React.FC = () => {
           }} title={wsConnected ? 'Connected' : 'Disconnected'} />
         </div>
         <div style={styles.topBarRight}>
+          <button style={styles.configBtn} onClick={() => navigate('/config')}>⚙️ Config</button>
           <span style={styles.userEmail}>{currentUser?.email}</span>
           <button style={styles.logoutBtn} onClick={logout}>Logout</button>
         </div>
@@ -64,6 +67,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   topBarRight: { display: 'flex', alignItems: 'center', gap: '16px' },
   userEmail: { fontSize: '13px', opacity: 0.8 },
+  configBtn: {
+    padding: '6px 16px',
+    backgroundColor: 'transparent',
+    border: '1px solid rgba(255,255,255,0.3)',
+    color: '#fff',
+    borderRadius: '6px',
+    fontSize: '13px',
+    cursor: 'pointer',
+  },
   logoutBtn: {
     padding: '6px 16px',
     backgroundColor: 'transparent',
