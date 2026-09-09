@@ -66,15 +66,13 @@ public class SqlChatStorageProvider extends AbstractChatStorageProvider {
 
     @Override
     protected ChatMessageData doSaveMessage(ChatMessageData message) {
-        String sql = "INSERT INTO " + prefixed("messages") + 
+        // Use MERGE INTO for cross-database upsert (H2, MySQL 8+, PostgreSQL 15+, H2)
+        String sql = "MERGE INTO " + prefixed("messages") + 
                 " (id, conversation_id, sender_id, sender_email, sender_name, " +
                 "receiver_id, receiver_email, content, message_type, media_url, " +
                 "media_mime_type, media_size, is_read, read_at, status, is_deleted, " +
                 "created_at, updated_at, metadata, tenant_id) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-                "ON DUPLICATE KEY UPDATE " +
-                "content = VALUES(content), status = VALUES(status), " +
-                "is_read = VALUES(is_read), updated_at = VALUES(updated_at)";
+                "KEY (id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -321,15 +319,12 @@ public class SqlChatStorageProvider extends AbstractChatStorageProvider {
 
     @Override
     protected ConversationData doSaveConversation(ConversationData conv) {
-        String sql = "INSERT INTO " + prefixed("conversations") +
+        String sql = "MERGE INTO " + prefixed("conversations") +
                 " (id, user1_id, user1_email, user2_id, user2_email, last_message, " +
                 "last_message_time, status, blocked_by_user1, blocked_by_user2, " +
                 "message_count, unread_count_user1, unread_count_user2, " +
                 "created_at, updated_at, metadata, tenant_id) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-                "ON DUPLICATE KEY UPDATE " +
-                "status = VALUES(status), last_message = VALUES(last_message), " +
-                "last_message_time = VALUES(last_message_time), updated_at = VALUES(updated_at)";
+                "KEY (id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -537,14 +532,16 @@ public class SqlChatStorageProvider extends AbstractChatStorageProvider {
                 "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
                 "  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
                 "  metadata TEXT," +
-                "  tenant_id VARCHAR(64)," +
-                "  INDEX idx_messages_conversation (conversation_id)," +
-                "  INDEX idx_messages_sender (sender_id)," +
-                "  INDEX idx_messages_receiver (receiver_id)," +
-                "  INDEX idx_messages_unread (receiver_id, is_read)," +
-                "  INDEX idx_messages_created (created_at)" +
+                "  tenant_id VARCHAR(64)" +
                 ")"
             );
+
+            // Create indexes for messages (separate statements for cross-DB compatibility)
+            createIndexIfNotExists(stmt, prefixed("messages"), "idx_messages_conversation", "conversation_id");
+            createIndexIfNotExists(stmt, prefixed("messages"), "idx_messages_sender", "sender_id");
+            createIndexIfNotExists(stmt, prefixed("messages"), "idx_messages_receiver", "receiver_id");
+            createIndexIfNotExists(stmt, prefixed("messages"), "idx_messages_unread", "receiver_id, is_read");
+            createIndexIfNotExists(stmt, prefixed("messages"), "idx_messages_created", "created_at");
 
             // Create conversations table
             stmt.executeUpdate(
@@ -565,18 +562,36 @@ public class SqlChatStorageProvider extends AbstractChatStorageProvider {
                 "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
                 "  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
                 "  metadata TEXT," +
-                "  tenant_id VARCHAR(64)," +
-                "  UNIQUE INDEX idx_conv_user_pair (user1_id, user2_id)," +
-                "  INDEX idx_conv_user1 (user1_id)," +
-                "  INDEX idx_conv_user2 (user2_id)" +
+                "  tenant_id VARCHAR(64)" +
                 ")"
             );
+
+            // Create indexes for conversations
+            createUniqueIndexIfNotExists(stmt, prefixed("conversations"), "idx_conv_user_pair", "user1_id, user2_id");
+            createIndexIfNotExists(stmt, prefixed("conversations"), "idx_conv_user1", "user1_id");
+            createIndexIfNotExists(stmt, prefixed("conversations"), "idx_conv_user2", "user2_id");
 
             log.info("[SQL] Schema initialized successfully for {}", storageType.getDisplayName());
 
         } catch (SQLException e) {
             log.error("[SQL] Failed to initialize schema", e);
             throw new RuntimeException("Failed to initialize SQL schema", e);
+        }
+    }
+
+    private void createIndexIfNotExists(Statement stmt, String tableName, String indexName, String columns) throws SQLException {
+        try {
+            stmt.executeUpdate("CREATE INDEX IF NOT EXISTS " + indexName + " ON " + tableName + " (" + columns + ")");
+        } catch (SQLException e) {
+            log.debug("[SQL] Could not create index {} (may already exist): {}", indexName, e.getMessage());
+        }
+    }
+
+    private void createUniqueIndexIfNotExists(Statement stmt, String tableName, String indexName, String columns) throws SQLException {
+        try {
+            stmt.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS " + indexName + " ON " + tableName + " (" + columns + ")");
+        } catch (SQLException e) {
+            log.debug("[SQL] Could not create unique index {} (may already exist): {}", indexName, e.getMessage());
         }
     }
 
@@ -603,6 +618,8 @@ public class SqlChatStorageProvider extends AbstractChatStorageProvider {
                         rs.getTimestamp("created_at").toInstant() : null)
                 .updatedAt(rs.getTimestamp("updated_at") != null ? 
                         rs.getTimestamp("updated_at").toInstant() : null)
+                .metadata(rs.getString("metadata") != null ?
+                        Map.of("raw", rs.getString("metadata")) : null)
                 .tenantId(rs.getString("tenant_id"))
                 .build();
     }
