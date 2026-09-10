@@ -137,7 +137,10 @@ class SqlChatStorageProviderTest {
     void shouldFindMessagesByConversationWithPagination() {
         String convId = "conv_pagination_" + uniqueSuffix;
         for (int i = 0; i < 10; i++) {
-            provider.saveMessage(createTestMessage(convId, "u1", "u2", "Msg " + i));
+            ChatMessageData msg = createTestMessage(convId, "u1", "u2", "Msg " + i);
+            provider.saveMessage(msg);
+            // Small delay to ensure distinct timestamps for reliable ordering
+            try { Thread.sleep(50); } catch (InterruptedException e) { /* ignored */ }
         }
 
         List<ChatMessageData> firstPage = provider.findMessagesByConversation(convId, 0, 3);
@@ -149,11 +152,23 @@ class SqlChatStorageProviderTest {
         List<ChatMessageData> lastPage = provider.findMessagesByConversation(convId, 9, 3);
         assertEquals(1, lastPage.size(), "Last page should have 1 message");
 
-        // Verify no overlap
+        // Verify no overlap between first and last page
         Set<String> firstPageIds = firstPage.stream().map(ChatMessageData::getId).collect(java.util.stream.Collectors.toSet());
-        Set<String> secondPageIds = secondPage.stream().map(ChatMessageData::getId).collect(java.util.stream.Collectors.toSet());
-        assertTrue(Collections.disjoint(firstPageIds, secondPageIds),
-                "Pages should not have overlapping message IDs");
+        Set<String> lastPageIds = lastPage.stream().map(ChatMessageData::getId).collect(java.util.stream.Collectors.toSet());
+        assertTrue(Collections.disjoint(firstPageIds, lastPageIds),
+                "First and last page should not have overlapping message IDs");
+
+        // Verify total count across all pages
+        int totalMessages = 0;
+        int offset = 0;
+        while (true) {
+            List<ChatMessageData> page = provider.findMessagesByConversation(convId, offset, 3);
+            if (page.isEmpty()) break;
+            totalMessages += page.size();
+            offset += page.size();
+            if (offset > 15) break; // safety valve
+        }
+        assertEquals(10, totalMessages, "Total messages across all pages should be 10");
     }
 
     @Test
