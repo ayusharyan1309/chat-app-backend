@@ -65,6 +65,11 @@ public class ChatService {
             .expireAfterWrite(Duration.ofSeconds(30)).maximumSize(500_000).build();
     private final Cache<String, List<Participant>> participantCache = Caffeine.newBuilder()
             .expireAfterWrite(Duration.ofSeconds(10)).maximumSize(100_000).build();
+    /** Hot-path caches: block state and conversations (type/directKey never change; title is display-only). */
+    private final Cache<String, Boolean> blockCache = Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofSeconds(10)).maximumSize(500_000).build();
+    private final Cache<String, Conversation> conversationCache = Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofSeconds(30)).maximumSize(200_000).build();
 
     public record UserInput(String id, String displayName, String email, String phone, String avatarUrl, String about,
                             Map<String, Object> metadata) {
@@ -231,6 +236,7 @@ public class ChatService {
             throw ApiException.notFound("User '" + other + "'");
         }
         c.store().setBlocked(slug, me, other, blocked);
+        blockCache.invalidate(slug + "|" + me + "|" + other);
     }
 
     // ================================================================== conversations
@@ -332,6 +338,7 @@ public class ChatService {
                 .avatarUrl(avatarUrl != null ? avatarUrl : conversation.getAvatarUrl())
                 .updatedAt(Instant.now()).build();
         c.store().updateConversation(updated);
+        conversationCache.invalidate(key(slug, conversationId));
         if (!Objects.equals(updated.getTitle(), conversation.getTitle())) {
             systemMessage(c, updated, me, "group.renamed", List.of(),
                     name(c, me) + " changed the group name to \"" + updated.getTitle() + "\"");
@@ -446,8 +453,12 @@ public class ChatService {
     public SendResult send(String slug, String me, String conversationId, SendInput input) {
         Ctx c = ctx(slug);
         requireActiveUser(slug, me);
-        Conversation conversation = conversation(c, conversationId);
-        requireMember(c, conversationId, me);
+        Conversation conversation = cachedConversation(c, conversationId);
+        // One fresh membership read serves both the authorisation check and the fan-out.
+        List<Participant> members = c.store().listParticipants(slug, conversationId);
+        if (members.stream().noneMatch(p -> p.getUserId().equals(me))) {
+            throw ApiException.notFound("Conversation");
+        }
         ChatMessage.Type type = input.type() == null ? ChatMessage.Type.TEXT : input.type();
         if (type == ChatMessage.Type.SYSTEM) {
             throw ApiException.badRequest("SYSTEM messages can only be sent through the server API");
@@ -455,28 +466,46 @@ public class ChatService {
         validateContent(c, type, input);
         if (conversation.getType() == Conversation.Type.DIRECT) {
             String other = peerId(conversation, me).orElseThrow();
-            if (c.store().isBlocked(slug, other, me)) {
+            if (blocked(c, other, me)) {
                 throw ApiException.forbidden("You can't send messages to this user");
             }
-            if (c.store().isBlocked(slug, me, other)) {
+            if (blocked(c, me, other)) {
                 throw ApiException.forbidden("Unblock this user to send messages");
             }
         }
-        return append(c, conversation, me, type, input, true);
+        return append(c, conversation, members, me, type, input, true);
+    }
+
+    private boolean blocked(Ctx c, String blocker, String blocked) {
+        return blockCache.get(c.slug() + "|" + blocker + "|" + blocked,
+                k -> c.store().isBlocked(c.slug(), blocker, blocked));
+    }
+
+    private Conversation cachedConversation(Ctx c, String conversationId) {
+        Conversation cached = conversationCache.getIfPresent(key(c.slug(), conversationId));
+        if (cached != null) {
+            return cached;
+        }
+        Conversation loaded = conversation(c, conversationId);
+        conversationCache.put(key(c.slug(), conversationId), loaded);
+        return loaded;
     }
 
     /** Server API: send on behalf of a participant; SYSTEM messages allowed. */
     public SendResult sendAsServer(String slug, String senderId, String conversationId, SendInput input) {
         Ctx c = ctx(slug);
         Conversation conversation = conversation(c, conversationId);
-        requireMember(c, conversationId, senderId);
+        List<Participant> members = c.store().listParticipants(slug, conversationId);
+        if (members.stream().noneMatch(p -> p.getUserId().equals(senderId))) {
+            throw ApiException.notFound("Conversation");
+        }
         ChatMessage.Type type = input.type() == null ? ChatMessage.Type.TEXT : input.type();
         validateContent(c, type, input);
-        return append(c, conversation, senderId, type, input, type != ChatMessage.Type.SYSTEM);
+        return append(c, conversation, members, senderId, type, input, type != ChatMessage.Type.SYSTEM);
     }
 
-    private SendResult append(Ctx c, Conversation conversation, String sender, ChatMessage.Type type, SendInput input,
-                              boolean metered) {
+    private SendResult append(Ctx c, Conversation conversation, List<Participant> members, String sender,
+                              ChatMessage.Type type, SendInput input, boolean metered) {
         if (input.replyToId() != null && c.store().findMessage(c.slug(), conversation.getId(), input.replyToId()).isEmpty()) {
             throw ApiException.badRequest("replyToId does not reference a message in this conversation");
         }
@@ -511,13 +540,13 @@ public class ChatService {
                 usage.countMessage(c.tenant());
             }
             metrics.messageSent();
-            fanOutNewMessage(c, conversation, sender, view);
+            fanOutNewMessage(c, conversation, members, sender, view);
         }
         return new SendResult(view, result.duplicate());
     }
 
-    private void fanOutNewMessage(Ctx c, Conversation conversation, String sender, MessageView view) {
-        List<Participant> members = c.store().listParticipants(c.slug(), conversation.getId());
+    private void fanOutNewMessage(Ctx c, Conversation conversation, List<Participant> members, String sender,
+                                  MessageView view) {
         List<String> userIds = members.stream().map(Participant::getUserId).toList();
         gateway.toUsers(c.slug(), userIds, ChatEvent.of(ChatEvent.MESSAGE_NEW, conversation.getId(), view));
         List<String> pushRecipients = members.stream()

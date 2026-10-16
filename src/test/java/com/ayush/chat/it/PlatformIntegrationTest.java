@@ -234,6 +234,29 @@ class PlatformIntegrationTest {
     }
 
     @Test
+    void rapidSendsFromOneSocketKeepSenderOrder() throws Exception {
+        TenantFixture t = tenant("enterprise"); // 50 msg/s per user; "pro" would rate-limit a 30-message burst
+        String alice = userToken(t, "alice");
+        userToken(t, "bob");
+        String id = user(alice, "POST", "/api/v1/conversations/direct", Map.of("userId", "bob"), 200).get("id").asText();
+        try (Socket ws = new Socket(alice)) {
+            for (int i = 0; i < 30; i++) {
+                ws.send("/app/messages.send", Map.of("conversationId", id, "clientMsgId", "o-" + i, "content", "#" + i));
+            }
+            for (int i = 0; i < 30; i++) {
+                ws.await("message.ack", e -> true);
+            }
+        }
+        JsonNode history = user(alice, "GET", "/api/v1/conversations/" + id + "/messages?limit=50", null, 200);
+        List<String> order = history.findValuesAsText("clientMsgId");
+        assertThat(order).hasSize(30);
+        for (int i = 0; i < 30; i++) {
+            assertThat(order.get(i)).isEqualTo("o-" + i);
+            assertThat(history.get(i).get("seq").asLong()).isEqualTo(i + 1);
+        }
+    }
+
+    @Test
     void featureGatingAndPlanOverrides() throws Exception {
         TenantFixture t = tenant("free");
         String alice = userToken(t, "alice");

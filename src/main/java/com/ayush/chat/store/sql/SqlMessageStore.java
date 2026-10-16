@@ -605,24 +605,11 @@ public class SqlMessageStore implements MessageStore {
     @Override
     public AppendResult appendMessage(ChatMessage message) {
         try {
+            // Duplicates are detected by the unique (conversation, sender, client_msg_id) index on insert:
+            // the transaction (including the seq bump) rolls back and the original is returned below.
             return transaction(conn -> {
-                if (message.getClientMsgId() != null) {
-                    Optional<ChatMessage> existing = findByClientMsgId(conn, message);
-                    if (existing.isPresent()) {
-                        return new AppendResult(existing.get(), true);
-                    }
-                }
                 long at = message.getCreatedAt().toEpochMilli();
-                int locked = update(conn, "UPDATE " + conversations + " SET last_seq = last_seq + 1, last_message_id = ?,"
-                                + " last_message_preview = ?, last_message_sender_id = ?, last_message_at = ?, activity_at = ?,"
-                                + " updated_at = ? WHERE tenant_id = ? AND id = ?",
-                        message.getId(), MessagePreview.of(message), message.getSenderId(), at, at, at,
-                        message.getTenantId(), message.getConversationId());
-                if (locked == 0) {
-                    throw new IllegalArgumentException("Conversation not found: " + message.getConversationId());
-                }
-                long seq = count(conn, "SELECT last_seq FROM " + conversations + " WHERE tenant_id = ? AND id = ?",
-                        message.getTenantId(), message.getConversationId());
+                long seq = allocateSeq(conn, message, at);
                 ChatMessage stored = message.toBuilder().seq(seq).build();
                 update(conn, "INSERT INTO " + messages + " (" + MSG_COLS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         stored.getTenantId(), stored.getConversationId(), seq, stored.getId(), stored.getSenderId(),
@@ -643,6 +630,31 @@ public class SqlMessageStore implements MessageStore {
             }
             throw e;
         }
+    }
+
+    /** Bump last_seq under the row lock and return it (one round trip on PostgreSQL via RETURNING). */
+    private long allocateSeq(Connection conn, ChatMessage message, long at) throws SQLException {
+        String update = "UPDATE " + conversations + " SET last_seq = last_seq + 1, last_message_id = ?,"
+                + " last_message_preview = ?, last_message_sender_id = ?, last_message_at = ?, activity_at = ?,"
+                + " updated_at = ? WHERE tenant_id = ? AND id = ?";
+        Object[] params = {message.getId(), MessagePreview.of(message), message.getSenderId(), at, at, at,
+                message.getTenantId(), message.getConversationId()};
+        if (dialect == SqlDialect.POSTGRESQL) {
+            try (PreparedStatement ps = conn.prepareStatement(update + " RETURNING last_seq")) {
+                bind(ps, params);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        throw new IllegalArgumentException("Conversation not found: " + message.getConversationId());
+                    }
+                    return rs.getLong(1);
+                }
+            }
+        }
+        if (update(conn, update, params) == 0) {
+            throw new IllegalArgumentException("Conversation not found: " + message.getConversationId());
+        }
+        return count(conn, "SELECT last_seq FROM " + conversations + " WHERE tenant_id = ? AND id = ?",
+                message.getTenantId(), message.getConversationId());
     }
 
     private Optional<ChatMessage> findByClientMsgId(Connection conn, ChatMessage m) throws SQLException {

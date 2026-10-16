@@ -50,23 +50,28 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                 .setTaskScheduler(heartbeatScheduler);
         registry.setApplicationDestinationPrefixes("/app");
         registry.setUserDestinationPrefix("/user");
+        // Events to one session leave in publish order (message.new before its receipts, etc.).
+        registry.setPreservePublishOrder(true);
     }
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry.addEndpoint("/ws").setAllowedOriginPatterns("*");
         registry.addEndpoint("/ws-sockjs").setAllowedOriginPatterns("*").withSockJS();
+        // Frames from one session are handled sequentially so a sender's messages keep their order
+        // (and get increasing seqs); different sessions still run in parallel.
+        registry.setPreserveReceiveOrder(true);
     }
 
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
         registration.interceptors(authInterceptor);
-        registration.taskExecutor().corePoolSize(8).maxPoolSize(64);
+        registration.taskExecutor().corePoolSize(32).maxPoolSize(32);
     }
 
     @Override
     public void configureClientOutboundChannel(ChannelRegistration registration) {
-        registration.taskExecutor().corePoolSize(8).maxPoolSize(64);
+        registration.taskExecutor().corePoolSize(16).maxPoolSize(16);
     }
 
     @Override
