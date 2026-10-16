@@ -1,7 +1,6 @@
 import { RefreshCw } from 'lucide-react'
-import { useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { systemApi } from '../api/admin'
 import { ThroughputChart } from '../components/charts/ThroughputChart'
 import { useChartTheme } from '../components/charts/useChartTheme'
 import { PatchBay } from '../components/connectors/PatchBay'
@@ -9,13 +8,10 @@ import { PageHeader } from '../components/layout/PageHeader'
 import { IconButton } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 import { Badge, EmptyState, LoadError, Skeleton, Spinner } from '../components/ui/Feedback'
-import { useNow } from '../hooks/misc'
-import { useApi } from '../hooks/useApi'
+import { useNow } from '../hooks/useNow'
 import { formatCount, formatDateTime, formatDuration, formatNumber, formatRelative, formatTime } from '../lib/format'
-import { useSystem } from '../state/system'
+import { LIVE_POLL_MS, useLiveSystemOverview } from '../state/system'
 import type { SystemOverview, ThroughputPoint } from '../types'
-
-const REFRESH_MS = 10_000
 
 function Totals({ overview }: { overview: SystemOverview | undefined }) {
   const t = overview?.totals
@@ -56,19 +52,19 @@ function ThroughputLegend({ points }: { points: ThroughputPoint[] }) {
   )
   const peak = useMemo(() => points.reduce((max, p) => Math.max(max, p.messages), 0), [points])
   return (
-    <div className="chart-legend" role="list" aria-label="Series">
-      <span className="chart-legend__item" role="listitem">
+    <ul className="chart-legend" aria-label="Series">
+      <li className="chart-legend__item">
         <span className="chart-legend__swatch" style={{ background: theme.series1 }} aria-hidden />
         Messages <strong className="tabular">{formatNumber(totals.messages)}</strong>
-      </span>
-      <span className="chart-legend__item" role="listitem">
+      </li>
+      <li className="chart-legend__item">
         <span className="chart-legend__swatch" style={{ background: theme.series2 }} aria-hidden />
         Deliveries <strong className="tabular">{formatNumber(totals.deliveries)}</strong>
-      </span>
-      <span className="chart-legend__item chart-legend__item--plain" role="listitem">
+      </li>
+      <li className="chart-legend__item chart-legend__item--plain">
         Peak <strong className="tabular">{formatNumber(peak)}</strong> msg/min
-      </span>
-    </div>
+      </li>
+    </ul>
   )
 }
 
@@ -104,20 +100,21 @@ function ThroughputTable({ points }: { points: ThroughputPoint[] }) {
   )
 }
 
-export function OverviewPage() {
-  const { publish, markUnreachable } = useSystem()
-  const overview = useApi(systemApi.overview, 'overview', { intervalMs: REFRESH_MS })
+/** Isolated so the 5 s tick re-renders only this label, not the charts. */
+function UpdatedLabel({ at, refreshing }: { at: string | null; refreshing: boolean }) {
   const now = useNow(5_000)
+  return (
+    <span className="overview__updated muted" aria-live="off">
+      {refreshing ? <Spinner size={12} /> : null}
+      {at ? `Updated ${formatRelative(at, now)}` : null}
+    </span>
+  )
+}
 
-  useEffect(() => {
-    if (overview.data) publish(overview.data)
-  }, [overview.data, publish])
-
-  useEffect(() => {
-    if (overview.error?.isNetwork) markUnreachable()
-  }, [overview.error, markUnreachable])
-
-  const data = overview.data
+export function OverviewPage() {
+  // The system provider is the only poller; this page just asks for the live rate while open.
+  const overview = useLiveSystemOverview()
+  const data = overview.overview ?? undefined
   const unhealthy = data?.components.filter((c) => !c.healthy) ?? []
   const updatedAt = useMemo(() => (data ? new Date().toISOString() : null), [data])
 
@@ -125,7 +122,7 @@ export function OverviewPage() {
     <>
       <PageHeader
         title="Overview"
-        description="Health of every infrastructure slot, platform totals and live message throughput. Refreshes every 10 seconds."
+        description={`Health of every infrastructure slot, platform totals and live message throughput. Refreshes every ${LIVE_POLL_MS / 1000} seconds.`}
         meta={
           data ? (
             <>
@@ -137,10 +134,7 @@ export function OverviewPage() {
         }
         actions={
           <>
-            <span className="overview__updated muted" aria-live="off">
-              {overview.refreshing ? <Spinner size={12} /> : null}
-              {updatedAt ? `Updated ${formatRelative(updatedAt, now)}` : null}
-            </span>
+            <UpdatedLabel at={updatedAt} refreshing={overview.refreshing} />
             <IconButton label="Refresh now" icon={<RefreshCw size={16} aria-hidden />} variant="secondary" onClick={() => void overview.reload()} />
           </>
         }

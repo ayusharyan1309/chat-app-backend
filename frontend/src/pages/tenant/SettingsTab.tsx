@@ -5,9 +5,9 @@ import { Field, FormGrid, FormSection, Input, Toggle } from '../../components/ui
 import { SaveBar } from '../../components/ui/SaveBar'
 import { useAction } from '../../hooks/useAction'
 import { initials } from '../../lib/format'
-import { resolveBackendUrl } from '../../lib/config'
+import { safeMediaUrl } from '../../lib/mediaUrl'
 import type { TenantDetail } from '../../types'
-import type { TenantTabProps } from './types'
+import type { TenantTabProps } from './tenantTab'
 
 const HEX = /^#[0-9a-f]{6}$/i
 
@@ -67,13 +67,15 @@ function BrandPreview({ draft, fallbackName }: { draft: Draft; fallbackName: str
   const primary = HEX.test(draft.primaryColor) ? draft.primaryColor : '#0B6E4F'
   const accent = HEX.test(draft.accentColor) ? draft.accentColor : '#F2A541'
   const name = draft.displayName || fallbackName
+  // Only http(s) (or relative) URLs are loaded; anything else falls back to the initials.
+  const logo = safeMediaUrl(draft.logoUrl)
   const [logoFailed, setLogoFailed] = useState<string | null>(null)
-  const showLogo = draft.logoUrl && logoFailed !== draft.logoUrl
+  const showLogo = logo !== null && logoFailed !== logo
   return (
     <figure className="brand-preview" aria-label="Branding preview">
       <div className="brand-preview__bar" style={{ background: primary }}>
         <span className="brand-preview__logo">
-          {showLogo ? <img src={resolveBackendUrl(draft.logoUrl)} alt="" onError={() => setLogoFailed(draft.logoUrl)} /> : initials(name)}
+          {showLogo ? <img src={logo} alt="" onError={() => setLogoFailed(logo)} /> : initials(name)}
         </span>
         <span className="brand-preview__name">{name}</span>
       </div>
@@ -103,6 +105,7 @@ export function SettingsTab({ tenant, onTenantChange, canWrite }: TenantTabProps
   const intError = (raw: string, min: number) => (!/^\d+$/.test(raw) || Number(raw) < min ? `Enter a whole number of at least ${min}.` : undefined)
   const errors = {
     name: !draft.name.trim() ? 'Enter a name.' : undefined,
+    logoUrl: draft.logoUrl.trim() && !safeMediaUrl(draft.logoUrl) ? 'Use an http(s) URL.' : undefined,
     primaryColor: draft.primaryColor && !HEX.test(draft.primaryColor) ? 'bad' : undefined,
     accentColor: draft.accentColor && !HEX.test(draft.accentColor) ? 'bad' : undefined,
     maxMessageLength: intError(draft.maxMessageLength, 1),
@@ -165,7 +168,7 @@ export function SettingsTab({ tenant, onTenantChange, canWrite }: TenantTabProps
               <Field label="Display name" hint="Shown to end users. Defaults to the tenant name." className="span-all">
                 {(c) => <Input {...c} value={draft.displayName} onChange={(e) => set({ displayName: e.target.value })} placeholder={tenant.name} disabled={ro} />}
               </Field>
-              <Field label="Logo URL" className="span-all">
+              <Field label="Logo URL" className="span-all" error={errors.logoUrl}>
                 {(c) => <Input {...c} mono value={draft.logoUrl} onChange={(e) => set({ logoUrl: e.target.value })} placeholder="https://cdn.acme.io/logo.png" disabled={ro} />}
               </Field>
               <ColorField label="Primary colour" value={draft.primaryColor} onChange={(v) => set({ primaryColor: v })} fallback="#0B6E4F" disabled={ro} />

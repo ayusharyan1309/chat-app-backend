@@ -11,7 +11,7 @@ import { useApi } from '../../hooks/useApi'
 import { formatLimit, formatMoney, pluralize } from '../../lib/format'
 import { parseOptionalInt } from '../../lib/util'
 import { EMPTY_LIMITS, PLAN_LIMIT_FIELDS, type PlanLimitKey, type PlanLimits } from '../../types'
-import type { TenantTabProps } from './types'
+import type { TenantTabProps } from './tenantTab'
 
 type Drafts = Record<PlanLimitKey, string>
 

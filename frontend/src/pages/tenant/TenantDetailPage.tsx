@@ -17,7 +17,7 @@ import { FeaturesTab } from './FeaturesTab'
 import { OverviewTab } from './OverviewTab'
 import { PlanLimitsTab } from './PlanLimitsTab'
 import { SettingsTab } from './SettingsTab'
-import { tenantPath, type TenantTabProps } from './types'
+import { tenantPath, type TenantTabProps } from './tenantTab'
 import { UsersTab } from './UsersTab'
 import { WebhooksTab } from './WebhooksTab'
 

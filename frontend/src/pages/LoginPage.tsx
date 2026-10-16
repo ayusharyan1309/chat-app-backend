@@ -6,7 +6,7 @@ import { BrandMark } from '../components/layout/BrandMark'
 import { Button, IconButton } from '../components/ui/Button'
 import { Callout } from '../components/ui/Feedback'
 import { Field, Input } from '../components/ui/Form'
-import { useDocumentTitle } from '../hooks/misc'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
 import { useAuth } from '../state/auth'
 import { useTheme } from '../state/theme'
 

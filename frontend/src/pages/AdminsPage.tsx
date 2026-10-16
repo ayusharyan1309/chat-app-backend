@@ -12,6 +12,7 @@ import { DataTable, type Column } from '../components/ui/Table'
 import { useAction } from '../hooks/useAction'
 import { useApi } from '../hooks/useApi'
 import { formatDate, formatRelative } from '../lib/format'
+import { isEmail } from '../lib/validation'
 import { useAuth } from '../state/auth'
 import { useConfirm } from '../state/confirm'
 import { useToast } from '../state/toast'
@@ -29,7 +30,7 @@ function CreateAdminDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   const [submitted, setSubmitted] = useState(false)
   const create = useAction(adminsApi.create, { toastError: false, success: (a) => `${a.name || a.email} can now sign in` })
   const errors = {
-    email: !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()) ? 'Enter a valid email address.' : undefined,
+    email: !isEmail(form.email) ? 'Enter a valid email address.' : undefined,
     name: !form.name.trim() ? 'Enter a name.' : undefined,
     password: form.password.length < 8 ? 'Use at least 8 characters.' : undefined,
   }

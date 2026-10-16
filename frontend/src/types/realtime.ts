@@ -1,18 +1,10 @@
-import type { Attachment, Conversation, Message, MessageType } from './client'
-import type { IsoDateTime, JsonObject } from './common'
+import type { Conversation, Message, SendMessageRequest } from './client'
+import type { IsoDateTime } from './common'
 
 /* Client -> server (SEND) bodies */
 
-export interface SendMessageFrame {
-  conversationId: string
-  clientMsgId: string
-  type?: MessageType
-  content?: string | null
-  attachment?: Attachment | null
-  replyToId?: string | null
-  forwarded?: boolean
-  metadata?: JsonObject
-}
+/** `/app/messages.send`: the REST send body plus the target conversation. */
+export type SendMessageFrame = SendMessageRequest & { conversationId: string }
 
 export interface TypingFrame {
   conversationId: string

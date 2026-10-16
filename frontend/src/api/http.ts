@@ -1,7 +1,14 @@
 import axios, { AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
 import { API_BASE, backendLabel } from '../lib/config'
 import { isRecord } from '../lib/util'
-import type { ApiErrorBody } from '../types'
+import { isServerErrorCode, type ApiErrorBody, type ApiErrorCode } from '../types'
+
+interface ApiErrorDetails {
+  path?: string
+  body?: unknown
+  /** The wire value of the body's `error` field when it is not a known `ApiErrorCode`. */
+  rawCode?: string
+}
 
 /**
  * Normalised error for every failed request. `message` is the backend's human readable message
@@ -9,26 +16,39 @@ import type { ApiErrorBody } from '../types'
  */
 export class ApiError extends Error {
   readonly status: number
-  readonly code: string
+  /** Closed union: switch over it exhaustively; unrecognised server codes become `unknown`. */
+  readonly code: ApiErrorCode
+  /** Exactly what the server sent in `error` (or `code` for client-side errors). */
+  readonly rawCode: string
   readonly path: string | undefined
   readonly body: unknown
 
-  constructor(message: string, status: number, code: string, path?: string, body?: unknown) {
+  constructor(message: string, status: number, code: ApiErrorCode, details: ApiErrorDetails = {}) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
-    this.path = path
-    this.body = body
+    this.rawCode = details.rawCode ?? code
+    this.path = details.path
+    this.body = details.body
   }
 
   get isNetwork(): boolean {
-    return this.status === 0
+    return this.status === 0 && (this.code === 'network_error' || this.code === 'timeout')
+  }
+
+  get isCancelled(): boolean {
+    return this.code === 'cancelled'
   }
 }
 
 function isErrorBody(value: unknown): value is ApiErrorBody {
   return isRecord(value) && typeof value.message === 'string'
+}
+
+function serverCode(raw: unknown): { code: ApiErrorCode; rawCode: string } {
+  const rawCode = typeof raw === 'string' && raw ? raw : 'unknown'
+  return { code: isServerErrorCode(rawCode) ? rawCode : 'unknown', rawCode }
 }
 
 const STATUS_FALLBACK: Record<number, string> = {
@@ -63,11 +83,12 @@ export function toApiError(err: unknown): ApiError {
     }
     const body = res.data
     if (isErrorBody(body)) {
-      return new ApiError(body.message, res.status, String(body.error ?? 'error'), body.path, body)
+      const { code, rawCode } = serverCode(body.error)
+      return new ApiError(body.message, res.status, code, { path: body.path, body, rawCode })
     }
     // Proxy errors (backend down) come back as 5xx with an empty / HTML body.
     const fallback = STATUS_FALLBACK[res.status] ?? `Request failed with status ${res.status}.`
-    return new ApiError(fallback, res.status, 'http_error', ax.config?.url, body)
+    return new ApiError(fallback, res.status, 'http_error', { path: ax.config?.url, body })
   }
   if (err instanceof Error) return new ApiError(err.message, 0, 'client_error')
   return new ApiError('Something went wrong.', 0, 'unknown')
@@ -185,6 +206,12 @@ export function createUserHttp(getToken: () => string | null, onUnauthorized?: (
     },
   )
   return instance
+}
+
+/** Per-call options accepted by the API functions that support cancellation. */
+export interface RequestOptions {
+  /** Aborts the request; the promise then rejects with an `ApiError` whose code is `cancelled`. */
+  signal?: AbortSignal
 }
 
 /** Encode a single path segment. */

@@ -1,4 +1,4 @@
-import { adminHttp, query, seg } from './http'
+import { adminHttp, query, seg, type RequestOptions } from './http'
 import type {
   ApiKey,
   ApiKeyCreated,
@@ -28,9 +28,9 @@ import type {
 const base = (slug: string) => `/api/admin/tenants/${seg(slug)}`
 
 export const tenantsApi = {
-  list: (params: TenantQuery = {}) =>
+  list: (params: TenantQuery = {}, options: RequestOptions = {}) =>
     adminHttp
-      .get<TenantSummary[]>('/api/admin/tenants', { params: query({ q: params.q, status: params.status }) })
+      .get<TenantSummary[]>('/api/admin/tenants', { params: query({ q: params.q, status: params.status }), signal: options.signal })
       .then((r) => r.data),
   create: (body: CreateTenantRequest) =>
     adminHttp.post<CreateTenantResponse>('/api/admin/tenants', body).then((r) => r.data),

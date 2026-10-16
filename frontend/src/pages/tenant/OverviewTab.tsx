@@ -9,19 +9,27 @@ import { Button } from '../../components/ui/Button'
 import { Card, MetaList } from '../../components/ui/Card'
 import { Callout, EmptyState, LoadError, Skeleton } from '../../components/ui/Feedback'
 import { Segmented } from '../../components/ui/Misc'
+import { useAction } from '../../hooks/useAction'
 import { useApi } from '../../hooks/useApi'
 import { formatBytes, formatCount, formatDate, formatDateTime, formatNumber, formatRelative } from '../../lib/format'
 import { useConfirm } from '../../state/confirm'
 import { useToast } from '../../state/toast'
-import type { TenantTabProps } from './types'
+import type { TenantTabProps } from './tenantTab'
 
 export function OverviewTab({ tenant, onTenantChange, canWrite }: TenantTabProps) {
   const navigate = useNavigate()
   const confirm = useConfirm()
   const toast = useToast()
   const [metric, setMetric] = useState<UsageMetric>('messages')
-  const [activating, setActivating] = useState(false)
   const usage = useApi(() => tenantsApi.usage(tenant.slug, 30), `usage:${tenant.slug}`)
+  const activate = useAction(
+    async () => {
+      const next = await tenantsApi.activate(tenant.slug)
+      onTenantChange(next)
+      return next
+    },
+    { success: `${tenant.name} activated` },
+  )
   const stats = tenant.stats
 
   const totalForMetric = (usage.data ?? []).reduce((sum, p) => sum + p[metric], 0)
@@ -42,18 +50,6 @@ export function OverviewTab({ tenant, onTenantChange, canWrite }: TenantTabProps
         toast.success(`${tenant.name} suspended`)
       },
     })
-
-  const activate = async () => {
-    setActivating(true)
-    try {
-      onTenantChange(await tenantsApi.activate(tenant.slug))
-      toast.success(`${tenant.name} activated`)
-    } catch (err) {
-      toast.error(err)
-    } finally {
-      setActivating(false)
-    }
-  }
 
   const remove = async () => {
     const ok = await confirm({
@@ -133,7 +129,7 @@ export function OverviewTab({ tenant, onTenantChange, canWrite }: TenantTabProps
               ) : null}
               <div className="row row--wrap">
                 {tenant.status === 'SUSPENDED' ? (
-                  <Button variant="primary" icon={<Play size={15} aria-hidden />} onClick={() => void activate()} loading={activating} disabled={!canWrite}>
+                  <Button variant="primary" icon={<Play size={15} aria-hidden />} onClick={() => void activate.run()} loading={activate.busy} disabled={!canWrite}>
                     Activate
                   </Button>
                 ) : null}

@@ -899,7 +899,7 @@ tr.is-dimmed td {
   text-align: left;
 }
 
-.user-pick:first-child {
+.user-pick-list__items > li:first-child > .user-pick {
   border-top: 0;
 }
 

@@ -42,10 +42,7 @@ export function useAction<A extends unknown[], R>(fn: (...args: A) => Promise<R>
         const apiError = toApiError(err)
         setError(apiError)
         const { toastError = true, errorTitle } = optsRef.current
-        if (toastError) {
-          if (errorTitle) toast.error(apiError, errorTitle)
-          else toast.error(apiError)
-        }
+        if (toastError) toast.fromError(apiError, errorTitle)
         return undefined
       } finally {
         setBusy(false)

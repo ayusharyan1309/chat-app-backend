@@ -21,7 +21,7 @@ export function SaveBar({
 }) {
   if (!dirty && !saving) return null
   return (
-    <div className="save-bar" role="region" aria-label="Unsaved changes">
+    <section className="save-bar" aria-label="Unsaved changes">
       <span className="save-bar__status">{message ?? 'You have unsaved changes.'}</span>
       <Button variant="ghost" onClick={onDiscard} disabled={saving}>
         Discard
@@ -29,6 +29,6 @@ export function SaveBar({
       <Button variant="primary" onClick={onSave} loading={saving} disabled={disabled}>
         {saveLabel}
       </Button>
-    </div>
+    </section>
   )
 }

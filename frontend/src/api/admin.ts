@@ -1,4 +1,4 @@
-import { adminHttp, query, seg } from './http'
+import { adminHttp, query, seg, type RequestOptions } from './http'
 import type {
   Admin,
   AuditEntry,
@@ -25,7 +25,8 @@ export const adminsApi = {
 }
 
 export const systemApi = {
-  overview: () => adminHttp.get<SystemOverview>('/api/admin/system/overview').then((r) => r.data),
+  overview: (options: RequestOptions = {}) =>
+    adminHttp.get<SystemOverview>('/api/admin/system/overview', { signal: options.signal }).then((r) => r.data),
   metrics: (minutes = 60) =>
     adminHttp
       .get<ThroughputPoint[]>('/api/admin/system/metrics', { params: { minutes: Math.min(Math.max(minutes, 1), 1440) } })
@@ -33,10 +34,11 @@ export const systemApi = {
 }
 
 export const auditApi = {
-  list: (params: AuditQuery = {}) =>
+  list: (params: AuditQuery = {}, options: RequestOptions = {}) =>
     adminHttp
       .get<AuditEntry[]>('/api/admin/audit', {
         params: query({ tenant: params.tenant, limit: params.limit ?? 100, before: params.before }),
+        signal: options.signal,
       })
       .then((r) => r.data),
 }

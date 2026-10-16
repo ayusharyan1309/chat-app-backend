@@ -16,7 +16,7 @@ import { formatLatency } from '../../lib/format'
 import { useConfirm } from '../../state/confirm'
 import { useToast } from '../../state/toast'
 import type { ConnectorKindDescriptor, TenantConnectorKind, TenantConnectorState } from '../../types'
-import type { TenantTabProps } from './types'
+import type { TenantTabProps } from './tenantTab'
 
 const OVERRIDABLE: ReadonlyArray<{ kind: TenantConnectorKind; title: string; description: string }> = [
   {

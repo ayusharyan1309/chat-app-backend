@@ -10,7 +10,7 @@ import { SaveBar } from '../../components/ui/SaveBar'
 import { useAction } from '../../hooks/useAction'
 import { useApi } from '../../hooks/useApi'
 import type { TenantFeature } from '../../types'
-import type { TenantTabProps } from './types'
+import type { TenantTabProps } from './tenantTab'
 
 type Overrides = Record<string, boolean>
 

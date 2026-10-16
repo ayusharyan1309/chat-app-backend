@@ -16,6 +16,8 @@ import { useConfirm } from '../state/confirm'
 import { useToast } from '../state/toast'
 import { EMPTY_LIMITS, PLAN_LIMIT_FIELDS, type Feature, type Plan, type PlanInput, type PlanLimitKey } from '../types'
 
+const NO_FEATURES: Feature[] = []
+
 const CODE_PATTERN = /^[a-z0-9](?:[a-z0-9-_]{0,38}[a-z0-9])?$/
 
 interface Draft {
@@ -69,11 +71,14 @@ function PlanDialog({ plan, features, nextSort, onClose, onSaved }: { plan: Plan
     success: (p) => `Plan ${p.name} saved`,
   })
 
-  const available = features.filter((f) => f.status === 'AVAILABLE')
-  const core = features.filter((f) => f.status === 'CORE')
+  const available = useMemo(() => features.filter((f) => f.status === 'AVAILABLE'), [features])
+  const core = useMemo(() => features.filter((f) => f.status === 'CORE'), [features])
   const byCategory = useMemo(() => {
     const map = new Map<string, Feature[]>()
-    for (const f of available) map.set(f.category ?? 'Other', [...(map.get(f.category ?? 'Other') ?? []), f])
+    for (const f of available) {
+      const category = f.category ?? 'Other'
+      map.set(category, [...(map.get(category) ?? []), f])
+    }
     return [...map.entries()]
   }, [available])
 
@@ -330,7 +335,7 @@ export function PlansPage() {
       {editing ? (
         <PlanDialog
           plan={editing === 'new' ? null : editing}
-          features={features.data ?? []}
+          features={features.data ?? NO_FEATURES}
           nextSort={nextSort}
           onClose={() => setEditing(null)}
           onSaved={() => void plans.reload()}

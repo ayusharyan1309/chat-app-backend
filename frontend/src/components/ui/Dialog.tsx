@@ -91,6 +91,9 @@ function DialogInner({
   )
 
   return (
+    // Backdrop click is a pointer convenience only: keyboard users close with Escape (the native
+    // `cancel` event handled above) or the labelled close button.
+    // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
     <dialog
       ref={ref}
       className={cx('dialog', `dialog--${size}`, tone === 'danger' && 'dialog--danger', className)}

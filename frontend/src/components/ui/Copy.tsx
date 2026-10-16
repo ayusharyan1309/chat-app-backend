@@ -1,6 +1,6 @@
 import { Check, Copy, Eye, EyeOff, KeyRound } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
-import { useClipboard } from '../../hooks/misc'
+import { useClipboard } from '../../hooks/useClipboard'
 import { cx } from '../../lib/util'
 import { Button } from './Button'
 import { Callout } from './Feedback'
