@@ -30,8 +30,8 @@ databaseChangeLog:
               - column: { name: code, type: VARCHAR(50), constraints: { nullable: false, unique: true, uniqueConstraintName: uk_plan_code } }
               - column: { name: name, type: VARCHAR(100), constraints: { nullable: false } }
               - column: { name: description, type: VARCHAR(500) }
-              - column: { name: price_monthly, type: DECIMAL(10,2), defaultValueNumeric: 0 }
-              - column: { name: price_yearly, type: DECIMAL(10,2), defaultValueNumeric: 0 }
+              - column: { name: price_monthly, type: "DECIMAL(10,2)", defaultValueNumeric: 0 }
+              - column: { name: price_yearly, type: "DECIMAL(10,2)", defaultValueNumeric: 0 }
               - column: { name: currency, type: VARCHAR(3), defaultValue: USD }
               - column: { name: max_users, type: BIGINT }
               - column: { name: max_messages_per_day, type: BIGINT }
