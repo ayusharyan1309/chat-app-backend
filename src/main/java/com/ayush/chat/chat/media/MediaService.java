@@ -47,13 +47,13 @@ public class MediaService {
     private final MediaUrlSigner signer;
     private final long serverMaxBytes;
 
-    /** The bytes of an upload; opened once, after all checks pass. */
-    @FunctionalInterface
-    public interface Content {
-        InputStream open() throws IOException;
-    }
-
     public record Upload(String fileName, String contentType, long size, Content content) {
+
+        /** The bytes of an upload; opened once, after all checks pass. */
+        @FunctionalInterface
+        public interface Content {
+            InputStream open() throws IOException;
+        }
     }
 
     public record MediaView(String mediaId, String url, String mimeType, long size, String fileName) {

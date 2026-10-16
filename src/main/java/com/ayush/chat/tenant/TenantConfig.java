@@ -75,23 +75,23 @@ public final class TenantConfig {
     }
 
     @Converter
-    public static class BrandingConverter extends JsonAttributeConverter<Branding> {
+    public static class BrandingConverter extends JsonAttributeConverter<TenantConfig.Branding> {
         public BrandingConverter() {
-            super(Branding.class);
+            super(TenantConfig.Branding.class);
         }
     }
 
     @Converter
-    public static class SettingsConverter extends JsonAttributeConverter<Settings> {
+    public static class SettingsConverter extends JsonAttributeConverter<TenantConfig.Settings> {
         public SettingsConverter() {
-            super(Settings.class);
+            super(TenantConfig.Settings.class);
         }
     }
 
     @Converter
-    public static class AuthConverter extends JsonAttributeConverter<Auth> {
+    public static class AuthConverter extends JsonAttributeConverter<TenantConfig.Auth> {
         public AuthConverter() {
-            super(Auth.class);
+            super(TenantConfig.Auth.class);
         }
     }
 

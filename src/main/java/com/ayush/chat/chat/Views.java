@@ -65,16 +65,4 @@ public final class Views {
         }
     }
 
-    public static ConversationView conversation(Conversation c, Participant self, UserView peer,
-                                                List<ParticipantView> participants) {
-        LastMessage last = c.getLastMessageId() == null ? null
-                : new LastMessage(c.getLastMessageId(), c.getLastMessagePreview(), c.getLastMessageSenderId(), c.getLastMessageAt());
-        long floor = self == null ? c.getLastSeq() : Math.max(self.getReadSeq(), self.getJoinedSeq());
-        String title = c.getType() == Conversation.Type.DIRECT && peer != null ? peer.displayName() : c.getTitle();
-        String avatar = c.getType() == Conversation.Type.DIRECT && peer != null ? peer.avatarUrl() : c.getAvatarUrl();
-        return new ConversationView(c.getId(), c.getType(), title, c.getDescription(), avatar, c.getCreatedBy(),
-                c.getCreatedAt(), c.getLastSeq(), last, Math.max(0, c.getLastSeq() - floor),
-                self != null && self.isMuted(), self != null && self.isArchived(), self != null && self.isPinned(),
-                self == null ? null : self.getRole(), peer, participants);
-    }
 }

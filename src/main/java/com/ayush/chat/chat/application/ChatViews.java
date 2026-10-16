@@ -1,6 +1,6 @@
 package com.ayush.chat.chat.application;
 
-import com.ayush.chat.chat.Views;
+import com.ayush.chat.chat.Views.LastMessage;
 import com.ayush.chat.chat.Views.ConversationView;
 import com.ayush.chat.chat.Views.ParticipantView;
 import com.ayush.chat.chat.Views.UserView;
@@ -57,7 +57,7 @@ public class ChatViews {
                     u != null ? u.getAvatarUrl() : null, showWatermarks ? p.getDeliveredSeq() : 0,
                     showWatermarks ? p.getReadSeq() : 0, p.getJoinedAt());
         }).toList();
-        return Views.conversation(conversation, self, peer(scope, conversation, viewer, users), participants);
+        return conversationView(conversation, self, peer(scope, conversation, viewer, users), participants);
     }
 
     /** One summary view per member (title, unread count and role differ per viewer). */
@@ -65,13 +65,13 @@ public class ChatViews {
         Map<String, ChatUser> users = usersById(scope, members.stream().map(Participant::getUserId).toList());
         Map<Participant, ConversationView> views = new LinkedHashMap<>();
         for (Participant p : members) {
-            views.put(p, Views.conversation(conversation, p, peer(scope, conversation, p.getUserId(), users), null));
+            views.put(p, conversationView(conversation, p, peer(scope, conversation, p.getUserId(), users), null));
         }
         return views;
     }
 
     public ConversationView summary(Conversation conversation, Participant self, UserView peer) {
-        return Views.conversation(conversation, self, peer, null);
+        return conversationView(conversation, self, peer, null);
     }
 
     public static ConversationView withoutParticipants(ConversationView v) {
@@ -109,5 +109,19 @@ public class ChatViews {
     Map<String, ChatUser> usersById(TenantScope scope, Collection<String> ids) {
         return scope.store().findUsers(scope.slug(), ids).stream()
                 .collect(Collectors.toMap(ChatUser::getId, Function.identity(), (a, b) -> a));
+    }
+
+    /** Summary as seen by {@code self}; unread count is relative to their read watermark. */
+    private static ConversationView conversationView(Conversation c, Participant self, UserView peer,
+                                                List<ParticipantView> participants) {
+        LastMessage last = c.getLastMessageId() == null ? null
+                : new LastMessage(c.getLastMessageId(), c.getLastMessagePreview(), c.getLastMessageSenderId(), c.getLastMessageAt());
+        long floor = self == null ? c.getLastSeq() : Math.max(self.getReadSeq(), self.getJoinedSeq());
+        String title = c.getType() == Conversation.Type.DIRECT && peer != null ? peer.displayName() : c.getTitle();
+        String avatar = c.getType() == Conversation.Type.DIRECT && peer != null ? peer.avatarUrl() : c.getAvatarUrl();
+        return new ConversationView(c.getId(), c.getType(), title, c.getDescription(), avatar, c.getCreatedBy(),
+                c.getCreatedAt(), c.getLastSeq(), last, Math.max(0, c.getLastSeq() - floor),
+                self != null && self.isMuted(), self != null && self.isArchived(), self != null && self.isPinned(),
+                self == null ? null : self.getRole(), peer, participants);
     }
 }
