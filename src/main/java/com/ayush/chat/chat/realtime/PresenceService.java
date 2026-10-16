@@ -1,17 +1,18 @@
 package com.ayush.chat.chat.realtime;
 
-import com.ayush.chat.core.cluster.BusTopic;
-import com.ayush.chat.core.cluster.ClusterBus;
-import com.ayush.chat.auth.Principals.ChatUserPrincipal;
+import com.ayush.chat.auth.security.Principals.ChatUserPrincipal;
 import com.ayush.chat.cache.CacheKeys;
+import com.ayush.chat.chat.dto.response.PresenceView;
 import com.ayush.chat.chat.event.ChatEvent;
 import com.ayush.chat.chat.port.PresenceQuery;
+import com.ayush.chat.core.cluster.BusTopic;
+import com.ayush.chat.core.cluster.ClusterBus;
 import com.ayush.chat.core.cluster.ClusterService;
 import com.ayush.chat.core.config.PlatformProperties;
 import com.ayush.chat.core.connector.runtime.PlatformConnectors;
 import com.ayush.chat.core.connector.runtime.TenantConnectors;
-import com.ayush.chat.tenant.Feature;
-import com.ayush.chat.tenant.TenantDirectory;
+import com.ayush.chat.tenant.model.Feature;
+import com.ayush.chat.tenant.service.TenantDirectory;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -52,9 +53,6 @@ public class PresenceService implements PresenceQuery {
     private final Map<String, Set<String>> watches = new ConcurrentHashMap<>();
     /** watched user key -> watching session ids */
     private final Map<String, Set<String>> watchers = new ConcurrentHashMap<>();
-
-    public record PresenceView(String userId, boolean online, Instant lastSeenAt) {
-    }
 
     record PresenceChange(String tenant, String userId, boolean online, Instant lastSeenAt) {
     }

@@ -8,7 +8,7 @@ import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.core.connector.HealthStatus;
 import com.ayush.chat.core.connector.Maturity;
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.push.PushSender;
 import com.ayush.chat.push.PushSender.PushNotification;

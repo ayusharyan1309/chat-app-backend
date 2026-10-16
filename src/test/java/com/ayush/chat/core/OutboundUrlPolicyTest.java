@@ -1,6 +1,6 @@
 package com.ayush.chat.core;
 
-import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.exception.DomainException;
 import com.ayush.chat.core.net.OutboundUrlPolicy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;

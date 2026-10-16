@@ -15,7 +15,7 @@ import com.ayush.chat.core.connector.config.ConfigSource;
 import com.ayush.chat.core.connector.config.ConnectorConfigChangedEvent;
 import com.ayush.chat.core.connector.config.ConnectorConfigService;
 import com.ayush.chat.core.connector.config.DefaultConnectors;
-import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.exception.DomainException;
 import com.ayush.chat.push.PushSender;
 import com.ayush.chat.store.MessageStore;
 import jakarta.annotation.PostConstruct;

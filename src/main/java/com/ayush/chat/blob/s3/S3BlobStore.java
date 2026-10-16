@@ -3,7 +3,7 @@ package com.ayush.chat.blob.s3;
 import com.ayush.chat.blob.BlobStore;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;

@@ -4,7 +4,7 @@ import com.ayush.chat.bus.EventBus;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Ids;
 import io.lettuce.core.Limit;
 import io.lettuce.core.Range;

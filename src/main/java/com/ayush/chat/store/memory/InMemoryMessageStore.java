@@ -1,7 +1,7 @@
 package com.ayush.chat.store.memory;
 
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.exception.DomainException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.store.MessagePreview;
 import com.ayush.chat.store.MessageStore;

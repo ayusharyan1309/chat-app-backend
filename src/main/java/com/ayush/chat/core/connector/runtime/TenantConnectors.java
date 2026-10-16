@@ -1,11 +1,11 @@
 package com.ayush.chat.core.connector.runtime;
 
-import com.ayush.chat.core.connector.config.ConnectorConfigChangedEvent;
-import com.ayush.chat.core.connector.config.ConnectorConfigService;
 import com.ayush.chat.core.config.PlatformProperties;
 import com.ayush.chat.core.connector.ConnectorKind;
-import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.connector.ConnectorRegistry;
+import com.ayush.chat.core.connector.config.ConnectorConfigChangedEvent;
+import com.ayush.chat.core.connector.config.ConnectorConfigService;
+import com.ayush.chat.core.exception.DomainException;
 import com.ayush.chat.push.PushSender;
 import com.ayush.chat.store.MessageStore;
 import org.springframework.beans.factory.DisposableBean;

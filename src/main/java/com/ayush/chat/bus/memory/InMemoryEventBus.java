@@ -3,7 +3,7 @@ package com.ayush.chat.bus.memory;
 import com.ayush.chat.bus.EventBus;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;

@@ -22,20 +22,25 @@ data, and the Redis suites flush the server's Lua script cache.
 
 | You are adding… | Put it in | Notes |
 |---|---|---|
-| A REST endpoint | `chat.api` (clients, server API) or `admin.*` (operators) | Controllers only map requests to a service call. Request/response types are records; never return `Map` or JPA entities. |
-| A messaging rule or use case | `chat.application` | One public method per use case; resolve the tenant with `TenantScopes.of(slug)` first. |
-| Something the domain needs from outside | a port interface next to its user (`chat.port`, `auth.ActiveUserCheck`) | Implement it in an adapter; never import STOMP, Redis, Kafka or a vendor SDK into application code. |
+| A REST endpoint | `<module>/controller` (`chat` for the client and server APIs, `admin` for operators) | Controllers only map requests to a service call. |
+| A request or response body | `<module>/dto` (`request/` and `response/` where a module has many) | A record per type, named `…Request`, `…View` or `…Response`; never return `Map` or JPA entities. |
+| A business rule or use case | `<module>/service` | One public method per use case; in `chat`, resolve the tenant with `TenantScopes.of(slug)` first. |
+| A table | `<module>/entity` + `<module>/repository` + a Liquibase changeset | Entities stay inside the service layer. JSON columns use a converter in `entity/converter`. |
+| A new error | a subclass in `core/exception` (or an existing one) | Map it to an `ErrorCode`; `ErrorHttpMapping` is the only place that knows HTTP statuses. |
+| Something the domain needs from outside | a port interface next to its user (`chat/port`, `auth/security/ActiveUserCheck`) | Implement it in an adapter; never import STOMP, Redis, Kafka or a vendor SDK into a service. |
 | A new infrastructure provider | `store`/`cache`/`bus`/`blob`/`push` sub-package | See [Adding a connector](#adding-a-connector). |
-| A tunable (TTL, pool size, interval, limit) | `core.config.PlatformProperties` + `application.yml` | Never a literal in code. Document the default in `application.yml`. |
-| A cache or cluster key | `cache.CacheKeys` | So the namespace stays visible in one place. |
-| A bus topic | `core.cluster.BusTopic` | Publish and subscribe through `ClusterBus` (typed JSON). |
-| A cluster-wide invalidation | `chat.event.ControlType` + a handler in `ControlChannel` | Publish **after commit**. |
-| An audited operator action | the application service performing it | `AuditService.record(AuditAction.X, …)` inside the same transaction. Add the action to `AuditAction`. |
+| A tunable (TTL, pool size, interval, limit) | `core/config/PlatformProperties` + `application.yml` | Never a literal in code. Document the default in `application.yml`. |
+| A cache or cluster key | `cache/CacheKeys` | So the namespace stays visible in one place. |
+| A bus topic | `core/cluster/BusTopic` | Publish and subscribe through `ClusterBus` (typed JSON). |
+| A cluster-wide invalidation | `chat/event/ControlType` + a handler in `chat/realtime/ControlChannel` | Publish **after commit**. |
+| An audited operator action | the service performing it | `AuditService.record(AuditAction.X, …)` inside the same transaction; add the action to `audit/model/AuditAction`. |
 
 ## Conventions
 
-- **Errors.** Throw `DomainException` with an `ErrorCode` (use the static factories:
-  `badRequest`, `notFound`, `forbidden`, `conflict`, `featureDisabled`, `quotaExceeded`, …).
+- **Errors.** Throw a typed exception from `core/exception` (`BadRequestException`,
+  `NotFoundException`, `ForbiddenException`, `ConflictException`, `FeatureDisabledException`,
+  `QuotaExceededException`, …), directly or via the `DomainException` factories; catch the most
+  specific type you can handle.
   Adapters wrap backend failures in `InfrastructureUnavailableException` (503) with a
   vendor-neutral component name. Do not throw `IllegalArgumentException` from request paths —
   anything that is not a `DomainException` becomes a logged 500.

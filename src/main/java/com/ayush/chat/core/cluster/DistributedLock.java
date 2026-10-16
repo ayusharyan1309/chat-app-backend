@@ -3,7 +3,7 @@ package com.ayush.chat.core.cluster;
 import com.ayush.chat.cache.CacheKeys;
 import com.ayush.chat.core.config.PlatformProperties;
 import com.ayush.chat.core.connector.runtime.PlatformConnectors;
-import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.exception.DomainException;
 import com.ayush.chat.core.util.Ids;
 import org.springframework.stereotype.Component;
 

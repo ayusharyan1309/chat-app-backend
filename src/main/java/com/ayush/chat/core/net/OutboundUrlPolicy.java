@@ -1,14 +1,14 @@
 package com.ayush.chat.core.net;
 
-import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.exception.DomainException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.util.Locale;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
+import java.util.Locale;
 
 /**
  * Guards outbound requests to tenant-supplied URLs (webhooks, push webhooks, JWKS) against SSRF:

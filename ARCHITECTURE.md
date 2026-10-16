@@ -267,13 +267,15 @@ The backend is a modular monolith with hexagonal boundaries:
 
 | Layer | Lives in | Rules |
 |---|---|---|
-| **Adapters in** | `chat.api`, `chat.ws`, `admin.*` controllers | Translate HTTP / STOMP to a use case and back. No business rules, no transactions, typed request and response records. |
-| **Application services** | `chat.application`, `admin.tenant.TenantAdminService`, `tenant.*Service`, `auth.*Service` | One use case per method. Own the transaction, enforce feature gates and quotas, record audit entries, publish side effects after commit. |
-| **Domain model** | `store.model`, `tenant` value objects (`TenantSnapshot`, `TenantLimits`, `TenantConfig`) | Plain data with small invariants; no framework types. |
-| **Ports** | `store.MessageStore` and the other SPIs, `chat.port.*`, `auth.ActiveUserCheck` | Interfaces owned by the code that needs them. |
-| **Adapters out** | `store.*`, `cache.*`, `bus.*`, `blob.*`, `push.*`, `chat.realtime` | Implement ports; translate vendor failures into `InfrastructureUnavailableException` (503). |
-| **Core** | `core.*` | Connector runtime, configuration, crypto, errors, cluster helpers. Depends on nothing above it. |
+| **Controllers (adapters in)** | `*/controller`, `chat/websocket` | Translate HTTP / STOMP to a use case and back. No business rules, no transactions; request and response bodies are records in `*/dto`. |
+| **Application services** | `*/service` | One use case per method. Own the transaction, enforce feature gates and quotas, record audit entries, publish side effects after commit. |
+| **DTOs** | `*/dto` (`request/`, `response/`, `socket/`, `command/`) | Immutable records; never JPA entities or `Map`s on the wire. |
+| **Domain model** | `store/model`, `tenant/model`, `*/entity` | Plain data with small invariants. Entities are persistence-only and never leave the service layer. |
+| **Ports** | `store.MessageStore` and the other SPIs, `chat/port`, `auth/security/ActiveUserCheck` | Interfaces owned by the code that needs them. |
+| **Adapters out** | `*/repository`, `store/*`, `cache/*`, `bus/*`, `blob/*`, `push/*`, `chat/realtime` | Implement ports; translate vendor failures into `InfrastructureUnavailableException` (503). |
+| **Core** | `core/*` | Connector runtime, configuration, crypto, the exception model, shared DTOs. Depends on nothing above it. |
 
-Errors are `DomainException`s carrying an `ErrorCode`; only `ErrorHttpMapping` knows HTTP
-statuses. Every tunable is a `platform.*` property. See
+Errors are typed `DomainException` subclasses in `core/exception` (`NotFoundException`,
+`ForbiddenException`, `QuotaExceededException`, …), each carrying an `ErrorCode`; only
+`ErrorHttpMapping` knows HTTP statuses, and every error body is a `core/dto/ErrorResponse`. Every tunable is a `platform.*` property. See
 [docs/ENGINEERING_REVIEW.md](docs/ENGINEERING_REVIEW.md) for the review behind this structure.

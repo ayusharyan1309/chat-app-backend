@@ -1,18 +1,18 @@
 package com.ayush.chat.core.connector.runtime;
 
-import com.ayush.chat.core.connector.config.ConfigScope;
-import com.ayush.chat.core.connector.config.ConnectorConfigService;
 import com.ayush.chat.core.connector.Connector;
 import com.ayush.chat.core.connector.ConnectorConfig;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.connector.config.ConfigScope;
+import com.ayush.chat.core.connector.config.ConnectorConfigService;
+import com.ayush.chat.core.exception.DomainException;
 import lombok.extern.slf4j.Slf4j;
 
-import java.util.Locale;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;

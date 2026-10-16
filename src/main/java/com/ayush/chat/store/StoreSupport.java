@@ -1,6 +1,6 @@
 package com.ayush.chat.store;
 
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 
 /**
  * Small helpers shared by the {@link MessageStore} adapters.

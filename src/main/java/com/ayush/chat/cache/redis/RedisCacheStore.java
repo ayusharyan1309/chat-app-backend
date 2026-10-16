@@ -4,7 +4,7 @@ import com.ayush.chat.cache.CacheStore;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.KeyValue;
 import io.lettuce.core.RedisClient;

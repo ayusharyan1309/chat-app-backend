@@ -2,7 +2,7 @@ package com.ayush.chat.push.fcm;
 
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Ids;
 import com.ayush.chat.push.PushSender;
 import com.google.api.client.http.HttpTransport;

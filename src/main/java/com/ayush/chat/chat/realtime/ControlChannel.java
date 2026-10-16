@@ -1,17 +1,17 @@
 package com.ayush.chat.chat.realtime;
 
+import com.ayush.chat.chat.event.ControlMessage;
+import com.ayush.chat.chat.service.BlockService;
+import com.ayush.chat.chat.service.ConversationAccess;
+import com.ayush.chat.chat.service.UserStatusService;
+import com.ayush.chat.chat.websocket.SessionRegistry;
 import com.ayush.chat.core.cluster.BusTopic;
 import com.ayush.chat.core.cluster.ClusterBus;
-import com.ayush.chat.chat.application.BlockService;
-import com.ayush.chat.chat.application.ConversationAccess;
-import com.ayush.chat.chat.application.UserStatusService;
-import com.ayush.chat.chat.event.ControlMessage;
-import com.ayush.chat.chat.webhook.WebhookTargets;
-import com.ayush.chat.chat.ws.SessionRegistry;
-import com.ayush.chat.tenant.PlanChangedEvent;
-import com.ayush.chat.tenant.TenantChangedEvent;
-import com.ayush.chat.tenant.TenantDirectory;
-import com.ayush.chat.tenant.TenantSnapshot;
+import com.ayush.chat.tenant.event.PlanChangedEvent;
+import com.ayush.chat.tenant.event.TenantChangedEvent;
+import com.ayush.chat.tenant.model.TenantSnapshot;
+import com.ayush.chat.tenant.service.TenantDirectory;
+import com.ayush.chat.webhook.service.WebhookTargets;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

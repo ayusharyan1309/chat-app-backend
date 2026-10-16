@@ -12,15 +12,15 @@ import java.util.List;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record DomainEvent(
-        String id,
-        String type,
-        String tenant,
-        Instant createdAt,
-        Object data,
-        List<String> recipients,
-        String senderId,
-        String senderName,
-        String conversationTitle) {
+                          String id,
+                          String type,
+                          String tenant,
+                          Instant createdAt,
+                          Object data,
+                          List<String> recipients,
+                          String senderId,
+                          String senderName,
+                          String conversationTitle) {
 
     public static final String MESSAGE_CREATED = "message.created";
     public static final String MESSAGE_UPDATED = "message.updated";

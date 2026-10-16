@@ -4,7 +4,7 @@ import com.ayush.chat.blob.BlobStore;
 import com.ayush.chat.blob.BlobStore.BlobObject;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.core.connector.Maturity;
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

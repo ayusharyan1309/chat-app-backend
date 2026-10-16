@@ -10,7 +10,7 @@ survives the diff.
 |---|---|
 | **Hexagonal core** | Messaging services depend on ports (`MessageStore`, `RealtimePublisher`, `PresenceQuery`, `ActiveUserCheck`), never on STOMP, the bus or a vendor SDK. Adapters live at the edges. |
 | **One reason to change per class** | The 1,000-line `ChatService` became `UserDirectoryService`, `BlockService`, `ConversationService`, `MembershipService`, `MessageService` and `ReceiptService` over small shared collaborators (`TenantScope`, `ConversationAccess`, `ChatViews`, `ConversationNotifier`). The 400-line tenant admin controller became five controllers over one application service. |
-| **Errors are domain values** | `DomainException` + `ErrorCode`; HTTP status is decided in one place (`ErrorHttpMapping`). Backend outages are `InfrastructureUnavailableException` → 503 with a vendor-neutral message. |
+| **Errors are domain values** | Typed exceptions in `core/exception` (`NotFoundException`, `QuotaExceededException`, …) over `DomainException` + `ErrorCode`; HTTP status is decided in one place (`ErrorHttpMapping`) and every error body is an `ErrorResponse`. Backend outages are `InfrastructureUnavailableException` → 503 with a vendor-neutral message. |
 | **Typed everything** | No `Map<String, Object>` API responses; enums instead of magic strings (`ConfigScope`, `ConfigSource`, `Maturity`, `ControlType`, `BusTopic`, `ExternalAuthType`, `FeatureSource`, `AuditAction`); JSON columns mapped with JPA converters instead of hand-parsed strings. |
 | **Configuration, not constants** | Every TTL, pool size, retry policy and interval is a `platform.*` property with a documented default (`PlatformProperties`, `application.yml`). |
 | **Transactions and side effects** | Application services own transactions; cache invalidations and cluster broadcasts run **after commit** (`AfterCommit`, `@TransactionalEventListener`), so no node can reload pre-commit state. |
@@ -23,7 +23,7 @@ survives the diff.
 
 | # | Finding | Fix |
 |---|---|---|
-| A1 | God class: `ChatService` mixed users, blocks, conversations, membership, messages, receipts, caching and notification (1,015 lines). | Split into six services plus shared collaborators in `chat.application`. |
+| A1 | God class: `ChatService` mixed users, blocks, conversations, membership, messages, receipts, caching and notification (1,015 lines). | Split into six services plus shared collaborators in `chat/service`. |
 | A2 | Application code called STOMP/bus classes directly; impossible to unit-test the domain. | Ports `RealtimePublisher` and `PresenceQuery`; `MessagingServicesTest` runs the domain on an in-memory store with recording fakes. |
 | A3 | Circular bean graph (security chain ↔ admin service ↔ password encoder; STOMP config ↔ chat ↔ messaging template) papered over with `ObjectProvider`. | `PasswordConfig`, `AdminDirectory`, `ActiveUserCheck` port; cycles removed. |
 | A4 | Admin controllers held business logic, transactions and auditing (create tenant + key was two transactions). | `TenantAdminService` (one transaction per operator action, audited inside), `TenantQueryService` (read models). |
@@ -31,6 +31,7 @@ survives the diff.
 | A6 | Untyped bus payloads and control messages (`"tenant.changed"` strings everywhere). | `ClusterBus` with `BusTopic`; `ControlMessage` with `ControlType`, tolerant of unknown types from newer nodes. |
 | A7 | Webhooks: management, dispatch, caching and HMAC in one class on a 4-thread pool. | `WebhookAdminService`, `WebhookDispatcher` (virtual threads, shared `WebhookSignature`), `WebhookTargets`. |
 | A8 | Nested repository interfaces required `considerNestedRepositories`. | All repositories are top-level. |
+| A9 | No visible layering: DTOs were records nested inside controllers and services, exceptions lived in `core/error`, entities sat next to services. | Every module has `controller` / `service` / `repository` / `entity` / `dto` (`request`, `response`, `socket`, `command`) packages, documented with `package-info.java`; typed exceptions and `ErrorResponse` in `core/exception` and `core/dto`. |
 
 ### Correctness
 

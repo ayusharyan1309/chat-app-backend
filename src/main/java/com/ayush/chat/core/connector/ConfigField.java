@@ -10,14 +10,14 @@ import java.util.List;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record ConfigField(
-        String key,
-        String label,
-        FieldType type,
-        boolean required,
-        Object defaultValue,
-        String description,
-        String placeholder,
-        List<String> options) {
+                          String key,
+                          String label,
+                          FieldType type,
+                          boolean required,
+                          Object defaultValue,
+                          String description,
+                          String placeholder,
+                          List<String> options) {
 
     public enum FieldType {
         STRING, SECRET, INTEGER, BOOLEAN, SELECT, TEXTAREA, URL

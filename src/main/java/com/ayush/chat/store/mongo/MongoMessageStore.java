@@ -2,8 +2,8 @@ package com.ayush.chat.store.mongo;
 
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.DomainException;
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.DomainException;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.store.MessagePreview;
 import com.ayush.chat.store.MessageStore;

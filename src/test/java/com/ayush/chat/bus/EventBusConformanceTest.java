@@ -1,6 +1,6 @@
 package com.ayush.chat.bus;
 
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Ids;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

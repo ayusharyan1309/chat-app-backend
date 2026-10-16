@@ -1,9 +1,9 @@
 package com.ayush.chat.store;
 
 import com.ayush.chat.core.connector.ConnectorSettings;
-import com.ayush.chat.core.error.DomainException;
-import com.ayush.chat.core.error.ErrorCode;
-import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.exception.DomainException;
+import com.ayush.chat.core.exception.ErrorCode;
+import com.ayush.chat.core.exception.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Ids;
 import com.ayush.chat.store.model.AppendResult;
 import com.ayush.chat.store.model.ChatMessage;

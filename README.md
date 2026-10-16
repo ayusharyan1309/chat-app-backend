@@ -156,25 +156,36 @@ PostgreSQL, MySQL and Redis, plus the console checks and a container build.
 
 ## Project layout
 
+Each module is split into the same layers, so finding code is predictable:
+
 ```
 src/main/java/com/ayush/chat/
-├── core/          connector framework, layered config, crypto (KeyRing), cluster + bus topics,
-│                  error taxonomy, persistence converters, SSRF policy
-├── store/ cache/ bus/ blob/ push/
-│                  the five SPIs and their adapters (sql, mongo, cassandra, firestore, redis, kafka, s3, fcm, …)
-├── tenant/        tenants, plans, features, limits, quotas (QuotaService) and metering (UsageMeter)
-├── auth/          admin login, API keys, platform JWTs, user-token policy, external tokens, security chain
-├── audit/         append-only audit log (AuditAction)
+├── core/                 shared kernel
+│   ├── exception/        DomainException + typed subclasses (NotFound, Forbidden, QuotaExceeded, …),
+│   │                     ErrorCode, GlobalExceptionHandler, ErrorHttpMapping
+│   ├── dto/              Page, ErrorResponse
+│   └── config/ connector/ crypto/ cluster/ persistence/ net/ util/
+├── auth/                 config/ (SecurityConfig) · security/ (auth filter, principals)
+│                         entity/ · repository/ · service/ · dto/
+├── tenant/               entity/ (+ converter/) · repository/ · service/ · model/ · event/ · dto/
+├── audit/                entity/ · repository/ · service/ · model/ · dto/
+├── webhook/              entity/ · repository/ · service/ · dto/
 ├── chat/
-│   ├── application/   messaging use cases: users, blocks, conversations, membership, messages, receipts
-│   ├── port/          what the use cases need from outside (RealtimePublisher, PresenceQuery)
-│   ├── realtime/      bus-backed gateway, presence, cluster control channel
-│   ├── api/ ws/       REST controllers and STOMP endpoints
-│   └── media/ webhook/ push/ metrics/
-└── admin/         operator API: system, infrastructure, plans, audit; tenant/ holds the tenant pages
-frontend/          React operator console + chat playground
-deploy/            nginx, Kubernetes, Postgres init
-docs/              API reference, engineering review, implementation plan
+│   ├── controller/       REST: client API, server API, media
+│   ├── websocket/        STOMP endpoint, CONNECT auth, /app/** handlers
+│   ├── service/          messaging use cases (users, blocks, conversations, membership, messages, receipts, media)
+│   ├── mapper/           store model → API views
+│   ├── dto/              request/ · response/ · socket/ · command/
+│   ├── port/             RealtimePublisher, PresenceQuery
+│   ├── event/            ChatEvent, DomainEvent, ControlMessage
+│   └── realtime/         bus-backed gateway, presence, control channel
+├── admin/                operator API: controller/ · service/ · dto/request/ · dto/response/
+└── store/ cache/ bus/ blob/ push/
+                          the five connector SPIs and their adapters (sql, mongo, cassandra, firestore,
+                          redis, kafka, s3, fcm, …)
+frontend/                 React operator console + chat playground
+deploy/                   nginx, Kubernetes, Postgres init
+docs/                     API reference, engineering review, implementation plan
 ```
 
 How the code is organised and how to extend it: [CONTRIBUTING.md](CONTRIBUTING.md). What the
