@@ -6,7 +6,7 @@ import com.ayush.chat.tenant.TenantService;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.event.EventListener;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.stereotype.Component;
 
 /**
@@ -28,8 +28,10 @@ public class ControlChannel {
         gateway.subscribeControl(this::onControl);
     }
 
-    @EventListener
+    /** After commit, so other nodes (and this one) never reload a tenant mid-transaction. */
+    @TransactionalEventListener(fallbackExecution = true)
     public void onTenantChanged(TenantService.TenantChangedEvent event) {
+        tenants.invalidate(event.slug());
         try {
             gateway.publishControl(new RealtimeGateway.ControlMessage("tenant.changed", event.slug(), null));
         } catch (Exception e) {

@@ -41,8 +41,15 @@ public class TenantDirectory {
         return find(slug).orElseThrow(() -> ApiException.notFound("Tenant '" + slug + "'"));
     }
 
+    /** Only hits are cached; a miss is re-checked next time so a just-created tenant is visible at once. */
     public Optional<TenantSnapshot> find(String slug) {
-        return cache.get(slug, this::load);
+        Optional<TenantSnapshot> cached = cache.getIfPresent(slug);
+        if (cached != null) {
+            return cached;
+        }
+        Optional<TenantSnapshot> loaded = load(slug);
+        loaded.ifPresent(snapshot -> cache.put(slug, loaded));
+        return loaded;
     }
 
     public TenantSnapshot requireUsable(String slug) {

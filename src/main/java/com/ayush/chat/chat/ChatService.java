@@ -488,7 +488,15 @@ public class ChatService {
             throw ApiException.badRequest("clientMsgId must be at most 128 characters");
         }
         if (metered) {
-            usage.ensureMessageQuota(c.tenant());
+            try {
+                usage.ensureMessageQuota(c.tenant());
+            } catch (ApiException quotaExceeded) {
+                // A retry of a message accepted before the quota ran out must still be acknowledged.
+                Optional<ChatMessage> accepted = input.clientMsgId() == null ? Optional.empty()
+                        : c.store().listMessages(c.slug(), conversation.getId(), null, null, 100).stream()
+                        .filter(m -> sender.equals(m.getSenderId()) && clientMsgId.equals(m.getClientMsgId())).findFirst();
+                return accepted.map(m -> new SendResult(MessageView.of(m), true)).orElseThrow(() -> quotaExceeded);
+            }
         }
         ChatMessage message = ChatMessage.builder()
                 .tenantId(c.slug()).id(Ids.newId()).conversationId(conversation.getId()).senderId(sender)

@@ -75,7 +75,7 @@ public class ApiKeyService {
         cache.invalidateAll();
     }
 
-    /** Resolve a presented key; empty when unknown, revoked or the tenant is not usable. */
+    /** Resolve a presented key; empty when unknown, revoked or the tenant was deleted (suspension is a 403 later). */
     @Transactional
     public Optional<Principals.TenantServerPrincipal> authenticate(String presented) {
         if (presented == null || !presented.startsWith(PREFIX)) {
@@ -84,7 +84,7 @@ public class ApiKeyService {
         String hash = SecretCipher.sha256(presented);
         Optional<Principals.TenantServerPrincipal> principal = cache.get(hash, h -> keys.findByHash(h)
                 .filter(k -> k.getRevokedAt() == null)
-                .filter(k -> k.getTenant().isUsable())
+                .filter(k -> k.getTenant().getStatus() != Tenant.Status.DELETED)
                 .map(k -> new Principals.TenantServerPrincipal(k.getTenant().getSlug(), k.getId(), k.getName())));
         principal.ifPresent(p -> touch(p.apiKeyId()));
         return principal;
