@@ -1,5 +1,7 @@
 package com.ayush.chat.store;
 
+import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.error.ErrorCode;
 import com.ayush.chat.core.util.Ids;
 import com.ayush.chat.store.model.AppendResult;
 import com.ayush.chat.store.model.ChatMessage;
@@ -17,7 +19,9 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -27,6 +31,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Behavioural contract for every {@link MessageStore}. Each provider gets a subclass that
@@ -42,7 +47,7 @@ public abstract class MessageStoreConformanceTest {
     @BeforeEach
     void setUpStore() throws Exception {
         store = createStore();
-        tenant = "t-" + Ids.randomToken(8).toLowerCase();
+        tenant = "t-" + Ids.randomToken(8).toLowerCase(Locale.ROOT);
     }
 
     @AfterEach
@@ -109,7 +114,7 @@ public abstract class MessageStoreConformanceTest {
         ChatUser first = user("alice", "Alice");
         Instant created = store.findUser(tenant, "alice").orElseThrow().getCreatedAt();
         store.upsertUser(first.toBuilder().displayName("Alice B").avatarUrl("https://x/a.png")
-                .pushTokens(new java.util.LinkedHashSet<>(Set.of("tok-1")))
+                .pushTokens(new LinkedHashSet<>(Set.of("tok-1")))
                 .metadata(Map.of("plan", "gold")).createdAt(now().plusSeconds(60)).updatedAt(now()).build());
         ChatUser updated = store.findUser(tenant, "alice").orElseThrow();
         assertThat(updated.getDisplayName()).isEqualTo("Alice B");
@@ -140,6 +145,15 @@ public abstract class MessageStoreConformanceTest {
         assertThat(store.searchUsers(tenant, null, 1, 1)).extracting(ChatUser::getId).containsExactly("bob");
         assertThat(store.findUsers(tenant, List.of("carol", "alice", "ghost"))).extracting(ChatUser::getId)
                 .containsExactlyInAnyOrder("alice", "carol");
+    }
+
+    @Test
+    void concurrentFirstUpsertsOfOneUserConverge() throws Exception {
+        List<ChatUser> results = race(8, i -> store.upsertUser(ChatUser.builder().tenantId(tenant).id("racer")
+                .displayName("Racer " + i).createdAt(now()).updatedAt(now()).build()));
+        assertThat(results).extracting(ChatUser::getId).containsOnly("racer");
+        assertThat(store.countUsers(tenant)).isEqualTo(1);
+        assertThat(store.findUser(tenant, "racer").orElseThrow().getDisplayName()).startsWith("Racer ");
     }
 
     @Test
@@ -175,6 +189,16 @@ public abstract class MessageStoreConformanceTest {
         assertThat(store.findDirectConversation(tenant, Conversation.directKey("alice", "bob")))
                 .get().extracting(Conversation::getId).isEqualTo(first.getId());
         assertThat(store.listParticipants(tenant, first.getId())).extracting(Participant::getUserId)
+                .containsExactlyInAnyOrder("alice", "bob");
+    }
+
+    @Test
+    void concurrentDirectCreationConvergesOnOneConversation() throws Exception {
+        List<Conversation> created = race(8, i -> i % 2 == 0 ? direct("alice", "bob") : direct("bob", "alice"));
+        String id = created.get(0).getId();
+        assertThat(created).extracting(Conversation::getId).containsOnly(id);
+        assertThat(store.stats(tenant).conversations()).isEqualTo(1);
+        assertThat(store.listParticipants(tenant, id)).extracting(Participant::getUserId)
                 .containsExactlyInAnyOrder("alice", "bob");
     }
 
@@ -256,6 +280,27 @@ public abstract class MessageStoreConformanceTest {
         AppendResult other = send(c, "bob", "yo", "same-id");
         assertThat(other.duplicate()).isFalse();
         assertThat(store.listMessages(tenant, c.getId(), null, null, 50)).hasSize(2);
+    }
+
+    @Test
+    void concurrentRetriesOfOneSendStoreOneMessage() throws Exception {
+        Conversation c = direct("alice", "bob");
+        List<AppendResult> results = race(8, i -> send(c, "alice", "hi", "retry-me"));
+        assertThat(results).filteredOn(r -> !r.duplicate()).hasSize(1);
+        assertThat(results).extracting(r -> r.message().getId()).containsOnly(results.get(0).message().getId());
+        assertThat(store.listMessages(tenant, c.getId(), null, null, 50)).hasSize(1);
+        assertThat(store.findConversation(tenant, c.getId()).orElseThrow().getLastSeq()).isEqualTo(1);
+    }
+
+    @Test
+    void appendToMissingConversationIsNotFound() {
+        ChatMessage orphan = ChatMessage.builder().tenantId(tenant).id(Ids.newId()).conversationId("missing")
+                .senderId("alice").clientMsgId("c1").content("x").createdAt(now()).build();
+        assertThatThrownBy(() -> store.appendMessage(orphan)).isInstanceOf(DomainException.class)
+                .extracting(e -> ((DomainException) e).getErrorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThatThrownBy(() -> store.appendMessage(orphan.toBuilder().clientMsgId(null).build()))
+                .isInstanceOf(DomainException.class)
+                .extracting(e -> ((DomainException) e).getErrorCode()).isEqualTo(ErrorCode.NOT_FOUND);
     }
 
     @Test
@@ -427,7 +472,7 @@ public abstract class MessageStoreConformanceTest {
         assertThat(inbox.get(0).unreadCount()).isEqualTo(2);
         assertThat(inbox.get(0).self().getUserId()).isEqualTo("alice");
 
-        List<InboxItem> page2 = store.listInbox(tenant, "alice", 10, activity(inbox.get(0).conversation()));
+        List<InboxItem> page2 = store.listInbox(tenant, "alice", 10, inbox.get(0).conversation().activityAt());
         assertThat(page2).extracting(i -> i.conversation().getId()).containsExactly(third.getId(), first.getId());
         assertThat(store.listInbox(tenant, "alice", 1, null)).hasSize(1);
 
@@ -435,10 +480,6 @@ public abstract class MessageStoreConformanceTest {
         assertThat(store.listInbox(tenant, "alice", 10, null)).extracting(i -> i.conversation().getId())
                 .doesNotContain(third.getId());
         assertThat(store.listInbox(tenant + "-other", "alice", 10, null)).isEmpty();
-    }
-
-    private static Instant activity(Conversation c) {
-        return c.getLastMessageAt() != null ? c.getLastMessageAt() : c.getCreatedAt();
     }
 
     @Test
@@ -459,5 +500,34 @@ public abstract class MessageStoreConformanceTest {
     @Test
     void healthIsReported() {
         assertThat(store.health().healthy()).isTrue();
+    }
+
+    @FunctionalInterface
+    protected interface Attempt<T> {
+        T run(int index) throws Exception;
+    }
+
+    /** Runs {@code threads} attempts released at the same instant; returns their results in index order. */
+    protected static <T> List<T> race(int threads, Attempt<T> attempt) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<T>> futures = new ArrayList<>();
+            for (int t = 0; t < threads; t++) {
+                int index = t;
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    return attempt.run(index);
+                }));
+            }
+            start.countDown();
+            List<T> results = new ArrayList<>();
+            for (Future<T> f : futures) {
+                results.add(f.get(60, TimeUnit.SECONDS));
+            }
+            return results;
+        } finally {
+            pool.shutdownNow();
+        }
     }
 }

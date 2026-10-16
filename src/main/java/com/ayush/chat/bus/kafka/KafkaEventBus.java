@@ -1,8 +1,10 @@
 package com.ayush.chat.bus.kafka;
 
 import com.ayush.chat.bus.EventBus;
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Ids;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.CommonClientConfigs;
@@ -19,6 +21,7 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.InterruptException;
 import org.apache.kafka.common.errors.TopicExistsException;
@@ -32,6 +35,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -61,9 +65,15 @@ import java.util.function.Consumer;
  *       messages published while every member is down are processed on restart.</li>
  * </ul>
  * Each subscription owns one polling thread, which keeps per-partition (and so per-key) order.
+ *
+ * <p>Failures to publish or subscribe (cluster unreachable, topic creation failed, bus closed)
+ * surface as {@link InfrastructureUnavailableException} (503). Delivery failures reported later by
+ * the producer callback are logged and counted in {@code publishFailures}.
  */
 @Slf4j
 public class KafkaEventBus implements EventBus {
+
+    private static final String COMPONENT = ConnectorKind.EVENT_BUS.getDisplayName();
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(500);
@@ -76,7 +86,7 @@ public class KafkaEventBus implements EventBus {
     private final int partitions;
     private final short replicationFactor;
     private final boolean autoCreateTopics;
-    private final String instanceId = Ids.randomToken(10).toLowerCase();
+    private final String instanceId = Ids.randomToken(10).toLowerCase(Locale.ROOT);
     private final Admin admin;
     private final KafkaProducer<String, String> producer;
     private final Set<String> knownTopics = ConcurrentHashMap.newKeySet();
@@ -164,12 +174,17 @@ public class KafkaEventBus implements EventBus {
         ensureOpen();
         String name = topicName(topic);
         ensureTopic(name);
-        producer.send(new ProducerRecord<>(name, key, payload), (metadata, error) -> {
-            if (error != null) {
-                publishFailures.incrementAndGet();
-                log.error("Kafka publish to {} failed", name, error);
-            }
-        });
+        try {
+            producer.send(new ProducerRecord<>(name, key, payload), (metadata, error) -> {
+                if (error != null) {
+                    publishFailures.incrementAndGet();
+                    log.error("Kafka publish to {} failed", name, error);
+                }
+            });
+        } catch (KafkaException e) {
+            publishFailures.incrementAndGet();
+            throw new InfrastructureUnavailableException(COMPONENT, e); // e.g. metadata unavailable within max.block.ms
+        }
         published.incrementAndGet();
     }
 
@@ -191,12 +206,18 @@ public class KafkaEventBus implements EventBus {
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
 
-        KafkaSubscription subscription = new KafkaSubscription(name, groupId, workQueue, handler, new KafkaConsumer<>(props));
+        KafkaConsumer<String, String> consumer;
+        try {
+            consumer = new KafkaConsumer<>(props);
+        } catch (KafkaException e) {
+            throw new InfrastructureUnavailableException(COMPONENT, e);
+        }
+        KafkaSubscription subscription = new KafkaSubscription(name, groupId, workQueue, handler, consumer);
         subscriptions.add(subscription);
         subscription.start();
         if (closed.get()) {
             subscription.close();
-            throw new IllegalStateException("Event bus closed");
+            throw closedException();
         }
         if (!subscription.awaitAssignment(ASSIGN_TIMEOUT)) {
             log.warn("Kafka subscription to {} (group {}) has no partition assignment after {}s; it will catch up once assigned",
@@ -226,8 +247,12 @@ public class KafkaEventBus implements EventBus {
 
     private void ensureOpen() {
         if (closed.get()) {
-            throw new IllegalStateException("Event bus closed");
+            throw closedException();
         }
+    }
+
+    private static InfrastructureUnavailableException closedException() {
+        return new InfrastructureUnavailableException(COMPONENT, "closed");
     }
 
     /** Prefix the topic and replace characters Kafka does not allow in topic names. */
@@ -249,13 +274,15 @@ public class KafkaEventBus implements EventBus {
             log.info("Created Kafka topic {} ({} partitions, replication {})", name, partitions, replicationFactor);
         } catch (ExecutionException e) {
             if (!(e.getCause() instanceof TopicExistsException)) {
-                throw new IllegalStateException("Could not create Kafka topic " + name + ": " + e.getCause().getMessage(), e.getCause());
+                log.warn("Could not create Kafka topic {}: {}", name, e.getCause().getMessage());
+                throw new InfrastructureUnavailableException(COMPONENT, e.getCause());
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while creating Kafka topic " + name, e);
+            throw new InfrastructureUnavailableException(COMPONENT, e);
         } catch (TimeoutException e) {
-            throw new IllegalStateException("Timed out creating Kafka topic " + name, e);
+            log.warn("Timed out creating Kafka topic {}", name);
+            throw new InfrastructureUnavailableException(COMPONENT, e);
         }
         knownTopics.add(name);
     }

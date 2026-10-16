@@ -1,5 +1,6 @@
 package com.ayush.chat.bus;
 
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Ids;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -8,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
@@ -48,7 +50,7 @@ public abstract class EventBusConformanceTest {
     @BeforeEach
     void setUpBus() throws Exception {
         bus = createBus();
-        topic = "conf-" + Ids.randomToken(8).toLowerCase();
+        topic = "conf-" + Ids.randomToken(8).toLowerCase(Locale.ROOT);
     }
 
     @AfterEach
@@ -246,12 +248,14 @@ public abstract class EventBusConformanceTest {
     }
 
     @Test
-    void closedBusRejectsPublishAndCloseIsIdempotent() throws Exception {
+    void closedBusIsUnavailableAndCloseIsIdempotent() throws Exception {
         EventBus other = createBus();
         extraBuses.add(other);
         other.close();
         other.close();
-        assertThatThrownBy(() -> other.publish(topic, "k", "late")).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> other.publish(topic, "k", "late")).isInstanceOf(InfrastructureUnavailableException.class);
+        assertThatThrownBy(() -> other.subscribe(topic, null, new Recorder()))
+                .isInstanceOf(InfrastructureUnavailableException.class);
         assertThat(other.health().healthy()).isFalse();
     }
 

@@ -7,6 +7,7 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorSettings;
+import com.ayush.chat.core.connector.Maturity;
 import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.common.config.SaslConfigs;
 import org.junit.jupiter.api.AfterAll;
@@ -80,7 +81,7 @@ class KafkaEventBusTest extends EventBusConformanceTest {
         ConnectorDescriptor d = factory.descriptor();
         assertThat(d.kind()).isEqualTo(ConnectorKind.EVENT_BUS);
         assertThat(d.id()).isEqualTo("kafka");
-        assertThat(d.maturity()).isEqualTo("GA");
+        assertThat(d.maturity()).isEqualTo(Maturity.GA);
         assertThat(d.compatibleWith()).contains("Redpanda", "Amazon MSK", "Confluent Cloud",
                 "Azure Event Hubs (Kafka API)", "Aiven");
         assertThat(d.field("bootstrapServers").required()).isTrue();

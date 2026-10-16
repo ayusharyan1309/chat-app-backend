@@ -1,11 +1,14 @@
 package com.ayush.chat.cache.redis;
 
 import com.ayush.chat.cache.CacheStore;
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.KeyValue;
 import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisException;
 import io.lettuce.core.RedisNoScriptException;
 import io.lettuce.core.RedisURI;
 import io.lettuce.core.ScriptOutputType;
@@ -22,13 +25,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * Redis-backed cache (standalone or Sentinel URIs; works with Valkey, KeyDB, Dragonfly and managed
  * Redis). One multiplexed Lettuce connection is shared by all callers. Compare-and-delete and
- * increment-with-TTL run as Lua scripts so they are atomic across nodes.
+ * increment-with-TTL run as Lua scripts so they are atomic across nodes. Commands fail fast while
+ * Redis is unreachable, as {@link InfrastructureUnavailableException} (503).
  */
 public class RedisCacheStore implements CacheStore {
+
+    private static final String COMPONENT = ConnectorKind.CACHE.getDisplayName();
 
     private static final String DELETE_IF_EQUALS = """
             if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -109,7 +116,7 @@ public class RedisCacheStore implements CacheStore {
 
     @Override
     public Optional<String> get(String key) {
-        return Optional.ofNullable(redis.get(k(key)));
+        return Optional.ofNullable(command(() -> redis.get(k(key))));
     }
 
     @Override
@@ -119,7 +126,7 @@ public class RedisCacheStore implements CacheStore {
             return values;
         }
         String[] prefixed = keys.stream().map(this::k).toArray(String[]::new);
-        for (KeyValue<String, String> kv : redis.mget(prefixed)) {
+        for (KeyValue<String, String> kv : command(() -> redis.mget(prefixed))) {
             values.add(kv.hasValue() ? kv.getValue() : null);
         }
         return values;
@@ -128,34 +135,31 @@ public class RedisCacheStore implements CacheStore {
     @Override
     public void set(String key, String value, Duration ttl) {
         long ms = ttlMillis(ttl);
-        if (ms > 0) {
-            redis.set(k(key), value, SetArgs.Builder.px(ms));
-        } else {
-            redis.set(k(key), value);
-        }
+        command(() -> ms > 0 ? redis.set(k(key), value, SetArgs.Builder.px(ms)) : redis.set(k(key), value));
     }
 
     @Override
     public boolean setIfAbsent(String key, String value, Duration ttl) {
         long ms = ttlMillis(ttl);
         SetArgs args = ms > 0 ? SetArgs.Builder.nx().px(ms) : SetArgs.Builder.nx();
-        return "OK".equals(redis.set(k(key), value, args));
+        return "OK".equals(command(() -> redis.set(k(key), value, args)));
     }
 
     @Override
     public void delete(String key) {
-        redis.del(k(key));
+        command(() -> redis.del(k(key)));
     }
 
     @Override
     public boolean deleteIfEquals(String key, String expected) {
-        Long deleted = script(deleteIfEqualsSha, DELETE_IF_EQUALS, k(key), expected);
+        Long deleted = command(() -> script(deleteIfEqualsSha, DELETE_IF_EQUALS, k(key), expected));
         return deleted != null && deleted > 0;
     }
 
     @Override
     public long increment(String key, long delta, Duration ttlIfNew) {
-        Long value = script(incrementSha, INCREMENT, k(key), String.valueOf(delta), String.valueOf(ttlMillis(ttlIfNew)));
+        Long value = command(() -> script(incrementSha, INCREMENT, k(key), String.valueOf(delta),
+                String.valueOf(ttlMillis(ttlIfNew))));
         return value == null ? 0 : value;
     }
 
@@ -173,6 +177,18 @@ public class RedisCacheStore implements CacheStore {
 
     private String k(String key) {
         return keyPrefix + key;
+    }
+
+    /** Runs one Redis command; an unreachable or failing server (or a closed store) is a 503. */
+    private <T> T command(Supplier<T> command) {
+        if (closed.get()) {
+            throw new InfrastructureUnavailableException(COMPONENT, "connection closed");
+        }
+        try {
+            return command.get();
+        } catch (RedisException e) {
+            throw new InfrastructureUnavailableException(COMPONENT, e);
+        }
     }
 
     /** EVALSHA with a fallback to EVAL when the script cache was flushed (restart, failover). */

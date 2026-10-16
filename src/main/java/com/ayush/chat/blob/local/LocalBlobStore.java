@@ -1,11 +1,12 @@
 package com.ayush.chat.blob.local;
 
 import com.ayush.chat.blob.BlobStore;
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -15,9 +16,13 @@ import java.util.Optional;
 
 /**
  * Stores blobs on the local filesystem (or a shared volume such as NFS/EFS for clusters).
- * Content type is kept in a sidecar file.
+ * Content type is kept in a sidecar file. Filesystem failures surface as
+ * {@link InfrastructureUnavailableException} (503).
  */
 public class LocalBlobStore implements BlobStore {
+
+    private static final String COMPONENT = ConnectorKind.BLOB_STORE.getDisplayName();
+    private static final String DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
     private final Path root;
 
@@ -44,17 +49,24 @@ public class LocalBlobStore implements BlobStore {
         }
     }
 
+    /** Written to a temporary file first and moved into place, so readers never see a partial blob. */
     @Override
     public void put(String key, InputStream data, long size, String contentType) {
         Path target = resolve(key);
+        Path tmp = null;
         try {
             Files.createDirectories(target.getParent());
-            Path tmp = Files.createTempFile(target.getParent(), ".upload", ".tmp");
+            tmp = Files.createTempFile(target.getParent(), ".upload", ".tmp");
             Files.copy(data, tmp, StandardCopyOption.REPLACE_EXISTING);
             Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            Files.writeString(sidecar(target), contentType == null ? "application/octet-stream" : contentType);
+            tmp = null;
+            Files.writeString(sidecar(target), contentType == null ? DEFAULT_CONTENT_TYPE : contentType);
         } catch (IOException e) {
-            throw new UncheckedIOException("Failed to store " + key, e);
+            throw new InfrastructureUnavailableException(COMPONENT, e);
+        } finally {
+            if (tmp != null) {
+                deleteQuietly(tmp);
+            }
         }
     }
 
@@ -66,10 +78,10 @@ public class LocalBlobStore implements BlobStore {
         }
         try {
             Path meta = sidecar(target);
-            String contentType = Files.exists(meta) ? Files.readString(meta) : "application/octet-stream";
+            String contentType = Files.exists(meta) ? Files.readString(meta) : DEFAULT_CONTENT_TYPE;
             return Optional.of(new BlobObject(Files.newInputStream(target), Files.size(target), contentType));
         } catch (IOException e) {
-            throw new UncheckedIOException("Failed to read " + key, e);
+            throw new InfrastructureUnavailableException(COMPONENT, e);
         }
     }
 
@@ -80,7 +92,7 @@ public class LocalBlobStore implements BlobStore {
             Files.deleteIfExists(target);
             Files.deleteIfExists(sidecar(target));
         } catch (IOException e) {
-            throw new UncheckedIOException("Failed to delete " + key, e);
+            throw new InfrastructureUnavailableException(COMPONENT, e);
         }
     }
 
@@ -96,7 +108,7 @@ public class LocalBlobStore implements BlobStore {
 
     private Path resolve(String key) {
         Path target = root.resolve(key).normalize();
-        if (!target.startsWith(root)) {
+        if (!target.startsWith(root) || target.equals(root)) {
             throw new IllegalArgumentException("Invalid blob key");
         }
         return target;
@@ -104,5 +116,13 @@ public class LocalBlobStore implements BlobStore {
 
     private static Path sidecar(Path target) {
         return target.resolveSibling(target.getFileName() + ".meta");
+    }
+
+    private static void deleteQuietly(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ignored) {
+            // best effort: a leftover temporary file is harmless
+        }
     }
 }

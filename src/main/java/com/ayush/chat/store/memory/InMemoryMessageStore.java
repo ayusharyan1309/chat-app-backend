@@ -1,8 +1,11 @@
 package com.ayush.chat.store.memory;
 
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.util.Json;
 import com.ayush.chat.store.MessagePreview;
 import com.ayush.chat.store.MessageStore;
+import com.ayush.chat.store.UserSearch;
 import com.ayush.chat.store.model.AppendResult;
 import com.ayush.chat.store.model.ChatMessage;
 import com.ayush.chat.store.model.ChatUser;
@@ -10,11 +13,11 @@ import com.ayush.chat.store.model.Conversation;
 import com.ayush.chat.store.model.InboxItem;
 import com.ayush.chat.store.model.Participant;
 import com.ayush.chat.store.model.StoreStats;
-import com.ayush.chat.core.util.Json;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +27,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Reference implementation of {@link MessageStore} held entirely in memory.
@@ -31,6 +35,11 @@ import java.util.concurrent.ConcurrentSkipListMap;
  * Objects are deep-copied on the way in and out so callers cannot mutate stored state.
  */
 public class InMemoryMessageStore implements MessageStore {
+
+    /** Serialises DIRECT conversation creation (check-then-insert on the direct-key index). */
+    private final ReentrantLock createLock = new ReentrantLock();
+    /** One lock per conversation: seq allocation and the dedupe check of an append are atomic. */
+    private final Map<String, ReentrantLock> appendLocks = new ConcurrentHashMap<>();
 
     private final Map<String, ChatUser> users = new ConcurrentHashMap<>();
     private final Set<String> blocks = ConcurrentHashMap.newKeySet();
@@ -99,18 +108,14 @@ public class InMemoryMessageStore implements MessageStore {
 
     @Override
     public List<ChatUser> searchUsers(String tenantId, String query, int offset, int limit) {
-        String q = query == null ? "" : query.trim().toLowerCase();
+        String q = UserSearch.normalize(query);
         return users.values().stream()
                 .filter(u -> u.getTenantId().equals(tenantId))
-                .filter(u -> q.isEmpty() || contains(u.getId(), q) || contains(u.getDisplayName(), q) || contains(u.getEmail(), q))
+                .filter(u -> UserSearch.matches(u, q))
                 .sorted(Comparator.comparing(ChatUser::getId))
                 .skip(offset).limit(limit)
                 .map(u -> copy(u, ChatUser.class))
                 .toList();
-    }
-
-    private static boolean contains(String value, String q) {
-        return value != null && value.toLowerCase().contains(q);
     }
 
     @Override
@@ -152,23 +157,28 @@ public class InMemoryMessageStore implements MessageStore {
     // ------------------------------------------------------------------ conversations
 
     @Override
-    public synchronized Conversation createConversation(Conversation conversation, List<Participant> initial) {
-        if (conversation.getType() == Conversation.Type.DIRECT) {
-            String existingId = directIndex.get(k(conversation.getTenantId(), conversation.getDirectKey()));
-            if (existingId != null) {
-                return copy(conversations.get(k(conversation.getTenantId(), existingId)), Conversation.class);
+    public Conversation createConversation(Conversation conversation, List<Participant> initial) {
+        createLock.lock();
+        try {
+            if (conversation.getType() == Conversation.Type.DIRECT) {
+                String existingId = directIndex.get(k(conversation.getTenantId(), conversation.getDirectKey()));
+                if (existingId != null) {
+                    return copy(conversations.get(k(conversation.getTenantId(), existingId)), Conversation.class);
+                }
+                directIndex.put(k(conversation.getTenantId(), conversation.getDirectKey()), conversation.getId());
             }
-            directIndex.put(k(conversation.getTenantId(), conversation.getDirectKey()), conversation.getId());
+            String key = k(conversation.getTenantId(), conversation.getId());
+            conversations.put(key, copy(conversation, Conversation.class));
+            Map<String, Participant> members = new ConcurrentHashMap<>();
+            for (Participant p : initial) {
+                members.put(p.getUserId(), copy(p, Participant.class));
+            }
+            participants.put(key, members);
+            messages.put(key, new ConcurrentSkipListMap<>());
+            return copy(conversation, Conversation.class);
+        } finally {
+            createLock.unlock();
         }
-        String key = k(conversation.getTenantId(), conversation.getId());
-        conversations.put(key, copy(conversation, Conversation.class));
-        Map<String, Participant> members = new ConcurrentHashMap<>();
-        for (Participant p : initial) {
-            members.put(p.getUserId(), copy(p, Participant.class));
-        }
-        participants.put(key, members);
-        messages.put(key, new ConcurrentSkipListMap<>());
-        return copy(conversation, Conversation.class);
     }
 
     @Override
@@ -203,17 +213,13 @@ public class InMemoryMessageStore implements MessageStore {
                 return;
             }
             Conversation c = conversations.get(convKey);
-            if (c != null && (before == null || activity(c).isBefore(before))) {
+            if (c != null && (before == null || c.activityAt().isBefore(before))) {
                 items.add(new InboxItem(copy(c, Conversation.class), copy(self, Participant.class)));
             }
         });
-        items.sort(Comparator.comparing((InboxItem i) -> activity(i.conversation())).reversed()
+        items.sort(Comparator.comparing((InboxItem i) -> i.conversation().activityAt()).reversed()
                 .thenComparing(i -> i.conversation().getId()));
         return items.size() > limit ? new ArrayList<>(items.subList(0, limit)) : items;
-    }
-
-    private static Instant activity(Conversation c) {
-        return c.getLastMessageAt() != null ? c.getLastMessageAt() : c.getCreatedAt();
     }
 
     // ------------------------------------------------------------------ participants
@@ -275,9 +281,11 @@ public class InMemoryMessageStore implements MessageStore {
         String convKey = k(message.getTenantId(), message.getConversationId());
         Conversation conv = conversations.get(convKey);
         if (conv == null) {
-            throw new IllegalArgumentException("Conversation not found: " + message.getConversationId());
+            throw DomainException.notFound("Conversation");
         }
-        synchronized (conv) {
+        ReentrantLock lock = appendLocks.computeIfAbsent(convKey, key -> new ReentrantLock());
+        lock.lock();
+        try {
             if (message.getClientMsgId() != null) {
                 String dedupeKey = k(convKey, message.getSenderId(), message.getClientMsgId());
                 String existingId = clientMsgIndex.get(dedupeKey);
@@ -300,6 +308,8 @@ public class InMemoryMessageStore implements MessageStore {
             conv.setUpdatedAt(stored.getCreatedAt());
             advanceReadState(message.getTenantId(), message.getConversationId(), message.getSenderId(), seq, seq);
             return new AppendResult(copy(stored, ChatMessage.class), false);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -332,7 +342,7 @@ public class InMemoryMessageStore implements MessageStore {
             if (result.size() >= limit) break;
             result.add(copy(m, ChatMessage.class));
         }
-        java.util.Collections.reverse(result);
+        Collections.reverse(result);
         return result;
     }
 

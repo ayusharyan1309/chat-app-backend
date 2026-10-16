@@ -4,8 +4,8 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
-import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.store.MessageStore;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.ServiceAccountCredentials;
@@ -23,47 +23,54 @@ import java.util.List;
 /**
  * Builds a dedicated Firestore client per connector (no global {@code FirebaseApp}), so several
  * projects/databases can be used side by side and swapped at runtime.
+ * <p>
+ * BETA: the store conformance suite passes against the Firestore emulator, but CI does not run
+ * the emulator, so it only runs where {@code FIRESTORE_EMULATOR_HOST} is set.
  */
 @Component
 public class FirestoreMessageStoreFactory implements ConnectorFactory<MessageStore> {
 
     static final String EMULATOR_ENV = "FIRESTORE_EMULATOR_HOST";
 
+    private static final ConnectorDescriptor DESCRIPTOR = new ConnectorDescriptor(ConnectorKind.MESSAGE_STORE,
+            "firestore", "Google Cloud Firestore",
+            "Serverless document database. Tenants are isolated by document hierarchy; sequence numbers, "
+                    + "idempotency and receipts are transactional; needs no composite indexes. Each conversation "
+                    + "sustains about one message per second (Firestore per-document write limit).",
+            "Document", Maturity.BETA,
+            List.of("Firebase Cloud Firestore", "Firestore emulator"),
+            List.of(ConfigField.of("projectId", "Project id").required().placeholder("my-gcp-project").build(),
+                    ConfigField.of("credentialsJson", "Service account key (JSON)").secret()
+                            .description("Contents of a service-account key file. Optional when Credentials "
+                                    + "path is set, on GCP with Application Default Credentials, or when "
+                                    + EMULATOR_ENV + " is set").build(),
+                    ConfigField.of("credentialsPath", "Credentials path")
+                            .placeholder("/etc/chat/firestore-sa.json")
+                            .description("Path to a service-account key file readable on every node").build(),
+                    ConfigField.of("databaseId", "Database id").defaultValue("(default)")
+                            .description("Firestore database within the project").build(),
+                    ConfigField.of("collectionPrefix", "Collection prefix").defaultValue("chat_")
+                            .description("Prepended to every collection name so several stores can share a database")
+                            .build()));
+
     @Override
     public ConnectorDescriptor descriptor() {
-        return new ConnectorDescriptor(ConnectorKind.MESSAGE_STORE, "firestore", "Google Cloud Firestore",
-                "Serverless document database. Tenants are isolated by document hierarchy; sequence numbers, "
-                        + "idempotency and receipts are transactional; needs no composite indexes. Each conversation "
-                        + "sustains about one message per second (Firestore per-document write limit).",
-                "Document", Maturity.BETA,
-                List.of("Firebase Cloud Firestore", "Firestore emulator"),
-                List.of(ConfigField.of("projectId", "Project id").required().placeholder("my-gcp-project").build(),
-                        ConfigField.of("credentialsJson", "Service account key (JSON)").secret()
-                                .description("Contents of a service-account key file. Optional when Credentials "
-                                        + "path is set, on GCP with Application Default Credentials, or when "
-                                        + EMULATOR_ENV + " is set").build(),
-                        ConfigField.of("credentialsPath", "Credentials path")
-                                .placeholder("/etc/chat/firestore-sa.json")
-                                .description("Path to a service-account key file readable on every node").build(),
-                        ConfigField.of("databaseId", "Database id").defaultValue("(default)")
-                                .description("Firestore database within the project").build(),
-                        ConfigField.of("collectionPrefix", "Collection prefix").defaultValue("chat_")
-                                .description("Prepended to every collection name so several stores can share a database")
-                                .build()));
+        return DESCRIPTOR;
     }
 
+    /** Settings arrive with the descriptor's defaults applied ({@link ConnectorSettings#withDefaults}). */
     @Override
     public MessageStore create(ConnectorSettings settings) throws IOException {
         FirestoreOptions.Builder options = FirestoreOptions.newBuilder()
                 .setProjectId(settings.required("projectId"))
-                .setDatabaseId(settings.string("databaseId", "(default)"));
+                .setDatabaseId(settings.required("databaseId"));
         String emulator = System.getenv(EMULATOR_ENV);
         if (emulator != null && !emulator.isBlank()) {
             options.setEmulatorHost(emulator.trim()); // plaintext channel and emulator credentials
         } else {
             options.setCredentials(credentials(settings));
         }
-        return new FirestoreMessageStore(options.build(), settings.string("collectionPrefix", "chat_"));
+        return new FirestoreMessageStore(options.build(), settings.string("collectionPrefix"));
     }
 
     /** Service-account JSON, then a key file, then Application Default Credentials. */

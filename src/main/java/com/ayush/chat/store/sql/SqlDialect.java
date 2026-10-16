@@ -1,6 +1,7 @@
 package com.ayush.chat.store.sql;
 
 import java.sql.SQLException;
+import java.util.Locale;
 
 /**
  * The few places where H2, PostgreSQL and MySQL differ for this schema. Everything else is
@@ -29,7 +30,7 @@ public enum SqlDialect {
     }
 
     public static SqlDialect fromJdbcUrl(String url) {
-        String u = url.toLowerCase();
+        String u = url.toLowerCase(Locale.ROOT);
         if (u.startsWith("jdbc:h2:")) return H2;
         if (u.startsWith("jdbc:postgresql:")) return POSTGRESQL;
         if (u.startsWith("jdbc:mysql:") || u.startsWith("jdbc:mariadb:")) return MYSQL;
@@ -58,6 +59,6 @@ public enum SqlDialect {
 
     /** Index/object already exists (only used for MySQL, which lacks CREATE INDEX IF NOT EXISTS). */
     public static boolean isAlreadyExists(SQLException e) {
-        return e.getErrorCode() == 1061 || (e.getMessage() != null && e.getMessage().toLowerCase().contains("already exists"));
+        return e.getErrorCode() == 1061 || (e.getMessage() != null && e.getMessage().toLowerCase(Locale.ROOT).contains("already exists"));
     }
 }

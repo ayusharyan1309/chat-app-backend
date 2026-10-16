@@ -1,6 +1,8 @@
 package com.ayush.chat.push.fcm;
 
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Ids;
 import com.ayush.chat.push.PushSender;
 import com.google.api.client.http.HttpTransport;
@@ -37,9 +39,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Firebase Cloud Messaging (Android, iOS via APNs, web). Each connector instance owns a uniquely
  * named {@link FirebaseApp}, so several tenants' Firebase projects can be active side by side.
+ * FCM errors are reported per token in the {@link PushResult}, never thrown; sending through a
+ * closed sender is an {@code InfrastructureUnavailableException} (503).
  */
 @Slf4j
 public class FcmPushSender implements PushSender {
+
+    private static final String COMPONENT = ConnectorKind.PUSH.getDisplayName();
 
     /** FCM multicast limit. */
     static final int MAX_TOKENS_PER_REQUEST = 500;
@@ -108,7 +114,7 @@ public class FcmPushSender implements PushSender {
     @Override
     public PushResult send(PushNotification notification) {
         if (closed.get()) {
-            throw new IllegalStateException("Push sender closed");
+            throw new InfrastructureUnavailableException(COMPONENT, "closed");
         }
         List<String> tokens = notification.deviceTokens() == null ? List.of() : notification.deviceTokens().stream()
                 .filter(t -> t != null && !t.isBlank()).distinct().toList();

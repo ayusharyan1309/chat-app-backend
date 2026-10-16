@@ -1,9 +1,13 @@
 package com.ayush.chat.store.mongo;
 
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.store.MessagePreview;
 import com.ayush.chat.store.MessageStore;
+import com.ayush.chat.store.StoreSupport;
 import com.ayush.chat.store.model.AppendResult;
 import com.ayush.chat.store.model.ChatMessage;
 import com.ayush.chat.store.model.ChatUser;
@@ -13,6 +17,7 @@ import com.ayush.chat.store.model.Participant;
 import com.ayush.chat.store.model.StoreStats;
 import com.mongodb.ConnectionString;
 import com.mongodb.ErrorCategory;
+import com.mongodb.MongoBulkWriteException;
 import com.mongodb.MongoClientSettings;
 import com.mongodb.MongoException;
 import com.mongodb.client.MongoClient;
@@ -81,9 +86,14 @@ import static com.mongodb.client.model.Updates.setOnInsert;
  * dates (millisecond precision). Metadata is stored as JSON text because its keys are
  * tenant-defined and may contain characters ({@code .}, {@code $}) that some Mongo-compatible
  * engines reject in field names.
+ * <p>
+ * Driver failures in data operations, and calls after {@link #close()}, surface as
+ * {@link InfrastructureUnavailableException} (503).
  */
 @Slf4j
 public class MongoMessageStore implements MessageStore {
+
+    private static final String COMPONENT = ConnectorKind.MESSAGE_STORE.getDisplayName();
 
     /** A claim whose owner has not finished after this long is considered abandoned and may be taken over. */
     private static final long CLAIM_STALE_MILLIS = 10_000;
@@ -169,6 +179,25 @@ public class MongoMessageStore implements MessageStore {
         return sb.toString();
     }
 
+    /** Runs one data operation: driver failures (and use after close) become a retryable 503. */
+    private <T> T call(Supplier<T> operation) {
+        if (closed.get()) {
+            throw new InfrastructureUnavailableException(COMPONENT, "store closed");
+        }
+        try {
+            return operation.get();
+        } catch (MongoException e) {
+            throw new InfrastructureUnavailableException(COMPONENT, e);
+        }
+    }
+
+    private void run(Runnable operation) {
+        call(() -> {
+            operation.run();
+            return null;
+        });
+    }
+
     @Override
     public String providerId() {
         return "mongodb";
@@ -210,60 +239,68 @@ public class MongoMessageStore implements MessageStore {
 
     @Override
     public ChatUser upsertUser(ChatUser user) {
-        List<Bson> updates = new ArrayList<>(List.of(
-                set("tenantId", user.getTenantId()),
-                set("userId", user.getId()),
-                set("displayName", user.getDisplayName()),
-                set("email", user.getEmail()),
-                set("phone", user.getPhone()),
-                set("avatarUrl", user.getAvatarUrl()),
-                set("about", user.getAbout()),
-                set("pushTokens", user.getPushTokens() == null ? List.of() : new ArrayList<>(user.getPushTokens())),
-                set("metadata", Json.write(user.getMetadata())),
-                set("deactivated", user.isDeactivated()),
-                set("updatedAt", date(user.getUpdatedAt())),
-                setOnInsert("createdAt", date(user.getCreatedAt()))));
-        if (user.getLastSeenAt() != null) {
-            updates.add(set("lastSeenAt", date(user.getLastSeenAt())));
-        }
-        Bson filter = eq("_id", key(user.getTenantId(), user.getId()));
-        FindOneAndUpdateOptions options = new FindOneAndUpdateOptions().upsert(true).returnDocument(ReturnDocument.AFTER);
-        Document stored = retryOnDuplicateKey(() -> users.findOneAndUpdate(filter, combine(updates), options));
-        return toUser(stored);
+        return call(() -> {
+            List<Bson> updates = new ArrayList<>(List.of(
+                    set("tenantId", user.getTenantId()),
+                    set("userId", user.getId()),
+                    set("displayName", user.getDisplayName()),
+                    set("email", user.getEmail()),
+                    set("phone", user.getPhone()),
+                    set("avatarUrl", user.getAvatarUrl()),
+                    set("about", user.getAbout()),
+                    set("pushTokens", user.getPushTokens() == null ? List.of() : new ArrayList<>(user.getPushTokens())),
+                    set("metadata", Json.write(user.getMetadata())),
+                    set("deactivated", user.isDeactivated()),
+                    set("updatedAt", date(user.getUpdatedAt())),
+                    setOnInsert("createdAt", date(user.getCreatedAt()))));
+            if (user.getLastSeenAt() != null) {
+                updates.add(set("lastSeenAt", date(user.getLastSeenAt())));
+            }
+            Bson filter = eq("_id", key(user.getTenantId(), user.getId()));
+            FindOneAndUpdateOptions options = new FindOneAndUpdateOptions().upsert(true)
+                    .returnDocument(ReturnDocument.AFTER);
+            Document stored = retryOnDuplicateKey(() -> users.findOneAndUpdate(filter, combine(updates), options));
+            return toUser(stored);
+        });
     }
 
     @Override
     public Optional<ChatUser> findUser(String tenantId, String userId) {
-        return Optional.ofNullable(users.find(eq("_id", key(tenantId, userId))).first()).map(MongoMessageStore::toUser);
+        return call(() -> Optional.ofNullable(users.find(eq("_id", key(tenantId, userId))).first())
+                .map(MongoMessageStore::toUser));
     }
 
     @Override
     public List<ChatUser> findUsers(String tenantId, Collection<String> userIds) {
-        if (userIds.isEmpty()) {
-            return List.of();
-        }
-        Map<String, ChatUser> found = new LinkedHashMap<>();
-        users.find(in("_id", userIds.stream().distinct().map(id -> key(tenantId, id)).toList()))
-                .forEach(d -> found.put(d.getString("userId"), toUser(d)));
-        return userIds.stream().distinct().map(found::get).filter(Objects::nonNull).toList();
+        return call(() -> {
+            if (userIds.isEmpty()) {
+                return List.of();
+            }
+            Map<String, ChatUser> found = new LinkedHashMap<>();
+            users.find(in("_id", userIds.stream().distinct().map(id -> key(tenantId, id)).toList()))
+                    .forEach(d -> found.put(d.getString("userId"), toUser(d)));
+            return userIds.stream().distinct().map(found::get).filter(Objects::nonNull).toList();
+        });
     }
 
     @Override
     public List<ChatUser> searchUsers(String tenantId, String query, int offset, int limit) {
-        if (limit <= 0) {
-            return List.of();
-        }
-        Bson filter = eq("tenantId", tenantId);
-        String q = query == null ? "" : query.trim();
-        if (!q.isEmpty()) {
-            String pattern = escapeRegex(q);
-            filter = and(filter, or(regex("userId", pattern, "i"), regex("displayName", pattern, "i"),
-                    regex("email", pattern, "i")));
-        }
-        List<ChatUser> result = new ArrayList<>();
-        users.find(filter).sort(ascending("userId")).skip(Math.max(0, offset)).limit(limit)
-                .forEach(d -> result.add(toUser(d)));
-        return result;
+        return call(() -> {
+            if (limit <= 0) {
+                return List.of();
+            }
+            Bson filter = eq("tenantId", tenantId);
+            String q = query == null ? "" : query.trim();
+            if (!q.isEmpty()) {
+                String pattern = escapeRegex(q);
+                filter = and(filter, or(regex("userId", pattern, "i"), regex("displayName", pattern, "i"),
+                        regex("email", pattern, "i")));
+            }
+            List<ChatUser> result = new ArrayList<>();
+            users.find(filter).sort(ascending("userId")).skip(Math.max(0, offset)).limit(limit)
+                    .forEach(d -> result.add(toUser(d)));
+            return result;
+        });
     }
 
     /** Escapes ASCII punctuation so the query is matched literally (works for PCRE and Java regex engines). */
@@ -280,130 +317,137 @@ public class MongoMessageStore implements MessageStore {
 
     @Override
     public long countUsers(String tenantId) {
-        return users.countDocuments(eq("tenantId", tenantId));
+        return call(() -> users.countDocuments(eq("tenantId", tenantId)));
     }
 
     @Override
     public void updateLastSeen(String tenantId, String userId, Instant lastSeenAt) {
-        users.updateOne(eq("_id", key(tenantId, userId)), set("lastSeenAt", date(lastSeenAt)));
+        run(() -> users.updateOne(eq("_id", key(tenantId, userId)), set("lastSeenAt", date(lastSeenAt))));
     }
 
     // ------------------------------------------------------------------ blocks
 
     @Override
     public void setBlocked(String tenantId, String blockerId, String blockedId, boolean blocked) {
-        Bson filter = eq("_id", key(tenantId, blockerId, blockedId));
-        if (!blocked) {
-            blocks.deleteOne(filter);
-            return;
-        }
-        retryOnDuplicateKey(() -> blocks.updateOne(filter, combine(setOnInsert("tenantId", tenantId),
-                setOnInsert("blockerId", blockerId), setOnInsert("blockedId", blockedId),
-                setOnInsert("createdAt", new Date())), new UpdateOptions().upsert(true)));
+        run(() -> {
+            Bson filter = eq("_id", key(tenantId, blockerId, blockedId));
+            if (!blocked) {
+                blocks.deleteOne(filter);
+                return;
+            }
+            retryOnDuplicateKey(() -> blocks.updateOne(filter, combine(setOnInsert("tenantId", tenantId),
+                    setOnInsert("blockerId", blockerId), setOnInsert("blockedId", blockedId),
+                    setOnInsert("createdAt", new Date())), new UpdateOptions().upsert(true)));
+        });
     }
 
     @Override
     public boolean isBlocked(String tenantId, String blockerId, String blockedId) {
-        return blocks.find(eq("_id", key(tenantId, blockerId, blockedId))).projection(include("_id")).first() != null;
+        return call(() -> blocks.find(eq("_id", key(tenantId, blockerId, blockedId))).projection(include("_id"))
+                .first() != null);
     }
 
     @Override
     public List<String> listBlocked(String tenantId, String blockerId) {
-        List<String> result = new ArrayList<>();
-        blocks.find(and(eq("tenantId", tenantId), eq("blockerId", blockerId)))
-                .projection(include("blockedId")).sort(ascending("blockedId"))
-                .forEach(d -> result.add(d.getString("blockedId")));
-        return result;
+        return call(() -> {
+            List<String> result = new ArrayList<>();
+            blocks.find(and(eq("tenantId", tenantId), eq("blockerId", blockerId)))
+                    .projection(include("blockedId")).sort(ascending("blockedId"))
+                    .forEach(d -> result.add(d.getString("blockedId")));
+            return result;
+        });
     }
 
     // ------------------------------------------------------------------ conversations
 
     @Override
     public Conversation createConversation(Conversation conversation, List<Participant> initial) {
-        String tenantId = conversation.getTenantId();
-        if (conversation.getType() == Conversation.Type.DIRECT) {
-            Optional<Conversation> existing = claim(directIndex, key(tenantId, conversation.getDirectKey()),
-                    "conversationId", conversation.getId(), id -> findConversation(tenantId, id));
-            if (existing.isPresent()) {
-                return existing.get();
+        return call(() -> {
+            String tenantId = conversation.getTenantId();
+            if (conversation.getType() == Conversation.Type.DIRECT) {
+                Optional<Conversation> existing = claim(directIndex, key(tenantId, conversation.getDirectKey()),
+                        "conversationId", conversation.getId(), id -> findConversation(tenantId, id));
+                if (existing.isPresent()) {
+                    return existing.get();
+                }
             }
-        }
-        // Participants go in before the conversation so that anyone who can see the conversation
-        // (including a losing concurrent DIRECT creator) also sees its members. Orphaned
-        // participant rows without a conversation are invisible to every query.
-        if (!initial.isEmpty()) {
-            List<ReplaceOneModel<Document>> writes = initial.stream()
-                    .map(p -> new ReplaceOneModel<>(eq("_id", participantId(p)), participantDoc(p),
-                            new ReplaceOptions().upsert(true)))
-                    .toList();
-            retryOnDuplicateKey(() -> participants.bulkWrite(writes));
-        }
-        Document doc = conversationDoc(conversation);
-        try {
-            conversations.insertOne(doc);
-        } catch (MongoException e) {
-            if (!isDuplicateKey(e)) {
-                throw e;
+            // Participants go in before the conversation so that anyone who can see the conversation
+            // (including a losing concurrent DIRECT creator) also sees its members. Orphaned
+            // participant rows without a conversation are invisible to every query.
+            if (!initial.isEmpty()) {
+                List<ReplaceOneModel<Document>> writes = initial.stream()
+                        .map(p -> new ReplaceOneModel<>(eq("_id", participantId(p)), participantDoc(p),
+                                new ReplaceOptions().upsert(true)))
+                        .toList();
+                retryOnDuplicateKey(() -> participants.bulkWrite(writes));
             }
-            // same id created twice (caller retry): return what is stored, never reset lastSeq
-            return findConversation(tenantId, conversation.getId()).orElseThrow(() -> e);
-        }
-        return toConversation(doc);
+            Document doc = conversationDoc(conversation);
+            try {
+                conversations.insertOne(doc);
+            } catch (MongoException e) {
+                if (!isDuplicateKey(e)) {
+                    throw e;
+                }
+                // same id created twice (caller retry): return what is stored, never reset lastSeq
+                return findConversation(tenantId, conversation.getId()).orElseThrow(() -> e);
+            }
+            return toConversation(doc);
+        });
     }
 
     @Override
     public Optional<Conversation> findConversation(String tenantId, String conversationId) {
-        return Optional.ofNullable(conversations.find(eq("_id", key(tenantId, conversationId))).first())
-                .map(MongoMessageStore::toConversation);
+        return call(() -> Optional.ofNullable(conversations.find(eq("_id", key(tenantId, conversationId))).first())
+                .map(MongoMessageStore::toConversation));
     }
 
     @Override
     public Optional<Conversation> findDirectConversation(String tenantId, String directKey) {
-        Document index = directIndex.find(eq("_id", key(tenantId, directKey))).first();
-        return index == null ? Optional.empty() : findConversation(tenantId, index.getString("conversationId"));
+        return call(() -> {
+            Document index = directIndex.find(eq("_id", key(tenantId, directKey))).first();
+            return index == null ? Optional.empty() : findConversation(tenantId, index.getString("conversationId"));
+        });
     }
 
     @Override
     public void updateConversation(Conversation conversation) {
-        conversations.updateOne(eq("_id", key(conversation.getTenantId(), conversation.getId())), combine(
+        run(() -> conversations.updateOne(eq("_id", key(conversation.getTenantId(), conversation.getId())), combine(
                 set("title", conversation.getTitle()),
                 set("description", conversation.getDescription()),
                 set("avatarUrl", conversation.getAvatarUrl()),
                 set("metadata", Json.write(conversation.getMetadata())),
-                set("updatedAt", date(conversation.getUpdatedAt()))));
+                set("updatedAt", date(conversation.getUpdatedAt())))));
     }
 
     @Override
     public List<InboxItem> listInbox(String tenantId, String userId, int limit, Instant before) {
-        if (limit <= 0) {
-            return List.of();
-        }
-        Map<String, Participant> memberships = new LinkedHashMap<>();
-        participants.find(and(eq("tenantId", tenantId), eq("userId", userId), eq("leftAt", null)))
-                .forEach(d -> memberships.put(key(tenantId, d.getString("conversationId")), toParticipant(d)));
-        if (memberships.isEmpty()) {
-            return List.of();
-        }
-        Bson sort = orderBy(descending("activityAt"), ascending("conversationId"));
-        List<Conversation> found = new ArrayList<>();
-        List<String> ids = new ArrayList<>(memberships.keySet());
-        for (int from = 0; from < ids.size(); from += IN_BATCH) {
-            Bson filter = in("_id", ids.subList(from, Math.min(ids.size(), from + IN_BATCH)));
-            if (before != null) {
-                filter = and(filter, lt("activityAt", new Date(ceilMillis(before))));
+        return call(() -> {
+            if (limit <= 0) {
+                return List.of();
             }
-            conversations.find(filter).sort(sort).limit(limit).forEach(d -> found.add(toConversation(d)));
-        }
-        found.sort(Comparator.comparing(MongoMessageStore::activity).reversed().thenComparing(Conversation::getId));
-        List<InboxItem> items = new ArrayList<>();
-        for (Conversation c : found.subList(0, Math.min(limit, found.size()))) {
-            items.add(new InboxItem(c, memberships.get(key(tenantId, c.getId()))));
-        }
-        return items;
-    }
-
-    private static Instant activity(Conversation c) {
-        return c.getLastMessageAt() != null ? c.getLastMessageAt() : c.getCreatedAt();
+            Map<String, Participant> memberships = new LinkedHashMap<>();
+            participants.find(and(eq("tenantId", tenantId), eq("userId", userId), eq("leftAt", null)))
+                    .forEach(d -> memberships.put(key(tenantId, d.getString("conversationId")), toParticipant(d)));
+            if (memberships.isEmpty()) {
+                return List.of();
+            }
+            Bson sort = orderBy(descending("activityAt"), ascending("conversationId"));
+            List<Conversation> found = new ArrayList<>();
+            List<String> ids = new ArrayList<>(memberships.keySet());
+            for (int from = 0; from < ids.size(); from += IN_BATCH) {
+                Bson filter = in("_id", ids.subList(from, Math.min(ids.size(), from + IN_BATCH)));
+                if (before != null) {
+                    filter = and(filter, lt("activityAt", new Date(ceilMillis(before))));
+                }
+                conversations.find(filter).sort(sort).limit(limit).forEach(d -> found.add(toConversation(d)));
+            }
+            found.sort(Comparator.comparing(Conversation::activityAt).reversed().thenComparing(Conversation::getId));
+            List<InboxItem> items = new ArrayList<>();
+            for (Conversation c : found.subList(0, Math.min(limit, found.size()))) {
+                items.add(new InboxItem(c, memberships.get(key(tenantId, c.getId()))));
+            }
+            return items;
+        });
     }
 
     /**
@@ -419,121 +463,133 @@ public class MongoMessageStore implements MessageStore {
 
     @Override
     public List<Participant> listParticipants(String tenantId, String conversationId) {
-        List<Participant> result = new ArrayList<>();
-        participants.find(and(eq("tenantId", tenantId), eq("conversationId", conversationId), eq("leftAt", null)))
-                .sort(ascending("userId"))
-                .forEach(d -> result.add(toParticipant(d)));
-        return result;
+        return call(() -> {
+            List<Participant> result = new ArrayList<>();
+            participants.find(and(eq("tenantId", tenantId), eq("conversationId", conversationId), eq("leftAt", null)))
+                    .sort(ascending("userId"))
+                    .forEach(d -> result.add(toParticipant(d)));
+            return result;
+        });
     }
 
     @Override
     public Optional<Participant> findParticipant(String tenantId, String conversationId, String userId) {
-        return Optional.ofNullable(participants.find(eq("_id", key(tenantId, conversationId, userId))).first())
-                .map(MongoMessageStore::toParticipant);
+        return call(() -> Optional.ofNullable(participants.find(eq("_id", key(tenantId, conversationId, userId))).first())
+                .map(MongoMessageStore::toParticipant));
     }
 
     @Override
     public void upsertParticipant(Participant participant) {
-        // $max keeps watermarks monotonic; everything else is overwritten.
-        Document doc = participantDoc(participant);
-        doc.remove("_id");
-        long delivered = (Long) doc.remove("deliveredSeq");
-        long read = (Long) doc.remove("readSeq");
-        List<Bson> updates = new ArrayList<>();
-        doc.forEach((field, value) -> updates.add(set(field, value)));
-        updates.add(max("deliveredSeq", delivered));
-        updates.add(max("readSeq", read));
-        retryOnDuplicateKey(() -> participants.updateOne(eq("_id", participantId(participant)), combine(updates),
-                new com.mongodb.client.model.UpdateOptions().upsert(true)));
+        run(() -> {
+            // $max keeps watermarks monotonic; everything else is overwritten.
+            Document doc = participantDoc(participant);
+            doc.remove("_id");
+            long delivered = (Long) doc.remove("deliveredSeq");
+            long read = (Long) doc.remove("readSeq");
+            List<Bson> updates = new ArrayList<>();
+            doc.forEach((field, value) -> updates.add(set(field, value)));
+            updates.add(max("deliveredSeq", delivered));
+            updates.add(max("readSeq", read));
+            retryOnDuplicateKey(() -> participants.updateOne(eq("_id", participantId(participant)), combine(updates),
+                    new UpdateOptions().upsert(true)));
+        });
     }
 
     @Override
     public void removeParticipant(String tenantId, String conversationId, String userId, Instant at) {
-        participants.updateOne(eq("_id", key(tenantId, conversationId, userId)),
-                combine(set("leftAt", date(at)), set("updatedAt", date(at))));
+        run(() -> participants.updateOne(eq("_id", key(tenantId, conversationId, userId)),
+                combine(set("leftAt", date(at)), set("updatedAt", date(at)))));
     }
 
     @Override
     public void advanceReadState(String tenantId, String conversationId, String userId, Long deliveredSeq, Long readSeq) {
-        Long delivered = deliveredSeq == null ? readSeq : readSeq == null ? deliveredSeq : Math.max(deliveredSeq, readSeq);
-        if (delivered == null) {
-            return;
-        }
-        List<Bson> updates = new ArrayList<>();
-        updates.add(max("deliveredSeq", delivered));
-        if (readSeq != null) {
-            updates.add(max("readSeq", readSeq));
-        }
-        updates.add(set("updatedAt", new Date()));
-        participants.updateOne(eq("_id", key(tenantId, conversationId, userId)), combine(updates));
+        run(() -> {
+            Long delivered = deliveredSeq == null ? readSeq
+                    : readSeq == null ? deliveredSeq : Math.max(deliveredSeq, readSeq);
+            if (delivered == null) {
+                return;
+            }
+            List<Bson> updates = new ArrayList<>();
+            updates.add(max("deliveredSeq", delivered));
+            if (readSeq != null) {
+                updates.add(max("readSeq", readSeq));
+            }
+            updates.add(set("updatedAt", new Date()));
+            participants.updateOne(eq("_id", key(tenantId, conversationId, userId)), combine(updates));
+        });
     }
 
     // ------------------------------------------------------------------ messages
 
     @Override
     public AppendResult appendMessage(ChatMessage message) {
-        String tenantId = message.getTenantId();
-        String conversationId = message.getConversationId();
-        String claimId = null;
-        if (message.getClientMsgId() != null) {
-            claimId = key(tenantId, conversationId, message.getSenderId(), message.getClientMsgId());
-            Optional<ChatMessage> original = claim(clientMsgIndex, claimId, "messageId", message.getId(),
-                    id -> findMessage(tenantId, conversationId, id));
-            if (original.isPresent()) {
-                return new AppendResult(original.get(), true);
+        return call(() -> {
+            String tenantId = message.getTenantId();
+            String conversationId = message.getConversationId();
+            String claimId = null;
+            if (message.getClientMsgId() != null) {
+                claimId = key(tenantId, conversationId, message.getSenderId(), message.getClientMsgId());
+                Optional<ChatMessage> original = claim(clientMsgIndex, claimId, "messageId", message.getId(),
+                        id -> findMessage(tenantId, conversationId, id));
+                if (original.isPresent()) {
+                    return new AppendResult(original.get(), true);
+                }
             }
-        }
-        Date at = date(message.getCreatedAt());
-        Document conversation = conversations.findOneAndUpdate(eq("_id", key(tenantId, conversationId)),
-                combine(inc("lastSeq", 1L),
-                        set("lastMessageId", message.getId()),
-                        set("lastMessagePreview", MessagePreview.of(message)),
-                        set("lastMessageSenderId", message.getSenderId()),
-                        set("lastMessageAt", at),
-                        set("activityAt", at),
-                        set("updatedAt", at)),
-                new FindOneAndUpdateOptions().returnDocument(ReturnDocument.AFTER).projection(include("lastSeq")));
-        if (conversation == null) {
-            if (claimId != null) {
-                clientMsgIndex.deleteOne(and(eq("_id", claimId), eq("messageId", message.getId())));
+            Date at = date(message.getCreatedAt());
+            Document conversation = conversations.findOneAndUpdate(eq("_id", key(tenantId, conversationId)),
+                    combine(inc("lastSeq", 1L),
+                            set("lastMessageId", message.getId()),
+                            set("lastMessagePreview", MessagePreview.of(message)),
+                            set("lastMessageSenderId", message.getSenderId()),
+                            set("lastMessageAt", at),
+                            set("activityAt", at),
+                            set("updatedAt", at)),
+                    new FindOneAndUpdateOptions().returnDocument(ReturnDocument.AFTER).projection(include("lastSeq")));
+            if (conversation == null) {
+                if (claimId != null) {
+                    clientMsgIndex.deleteOne(and(eq("_id", claimId), eq("messageId", message.getId())));
+                }
+                throw DomainException.notFound("Conversation");
             }
-            throw new IllegalArgumentException("Conversation not found: " + conversationId);
-        }
-        long seq = conversation.get("lastSeq", Number.class).longValue();
-        Document doc = messageDoc(message, seq);
-        messages.insertOne(doc);
-        participants.updateOne(eq("_id", key(tenantId, conversationId, message.getSenderId())),
-                combine(max("deliveredSeq", seq), max("readSeq", seq), set("updatedAt", new Date())));
-        return new AppendResult(toMessage(doc), false);
+            long seq = conversation.get("lastSeq", Number.class).longValue();
+            Document doc = messageDoc(message, seq);
+            messages.insertOne(doc);
+            participants.updateOne(eq("_id", key(tenantId, conversationId, message.getSenderId())),
+                    combine(max("deliveredSeq", seq), max("readSeq", seq), set("updatedAt", new Date())));
+            return new AppendResult(toMessage(doc), false);
+        });
     }
 
     @Override
     public Optional<ChatMessage> findMessage(String tenantId, String conversationId, String messageId) {
-        return Optional.ofNullable(messages.find(eq("_id", key(tenantId, conversationId, messageId))).first())
-                .map(MongoMessageStore::toMessage);
+        return call(() -> Optional.ofNullable(messages.find(eq("_id", key(tenantId, conversationId, messageId))).first())
+                .map(MongoMessageStore::toMessage));
     }
 
     @Override
     public List<ChatMessage> listMessages(String tenantId, String conversationId, Long afterSeq, Long beforeSeq, int limit) {
-        if (limit <= 0) {
-            return List.of();
-        }
-        Bson scope = and(eq("tenantId", tenantId), eq("conversationId", conversationId));
-        List<ChatMessage> result = new ArrayList<>();
-        if (afterSeq != null) {
-            messages.find(and(scope, gt("seq", afterSeq))).sort(ascending("seq")).limit(limit)
-                    .forEach(d -> result.add(toMessage(d)));
+        return call(() -> {
+            if (limit <= 0) {
+                return List.of();
+            }
+            Bson scope = and(eq("tenantId", tenantId), eq("conversationId", conversationId));
+            List<ChatMessage> result = new ArrayList<>();
+            if (afterSeq != null) {
+                messages.find(and(scope, gt("seq", afterSeq))).sort(ascending("seq")).limit(limit)
+                        .forEach(d -> result.add(toMessage(d)));
+                return result;
+            }
+            Bson filter = beforeSeq == null ? scope : and(scope, lt("seq", beforeSeq));
+            messages.find(filter).sort(descending("seq")).limit(limit).forEach(d -> result.add(toMessage(d)));
+            Collections.reverse(result);
             return result;
-        }
-        Bson filter = beforeSeq == null ? scope : and(scope, lt("seq", beforeSeq));
-        messages.find(filter).sort(descending("seq")).limit(limit).forEach(d -> result.add(toMessage(d)));
-        Collections.reverse(result);
-        return result;
+        });
     }
 
     @Override
     public void updateMessage(ChatMessage message) {
-        messages.updateOne(eq("_id", key(message.getTenantId(), message.getConversationId(), message.getId())), combine(
+        Bson id = eq("_id", key(message.getTenantId(), message.getConversationId(), message.getId()));
+        run(() -> messages.updateOne(id, combine(
                 set("content", message.getContent()),
                 set("attachment", attachmentDoc(message.getAttachment())),
                 set("reactions", reactionsDoc(message.getReactions())),
@@ -541,20 +597,22 @@ public class MongoMessageStore implements MessageStore {
                 set("editedAt", date(message.getEditedAt())),
                 set("deleted", message.isDeleted()),
                 set("deletedAt", date(message.getDeletedAt())),
-                set("metadata", Json.write(message.getMetadata()))));
+                set("metadata", Json.write(message.getMetadata())))));
     }
 
     // ------------------------------------------------------------------ admin
 
     @Override
     public StoreStats stats(String tenantId) {
-        if (tenantId == null) {
-            return new StoreStats(users.estimatedDocumentCount(), conversations.estimatedDocumentCount(),
-                    messages.estimatedDocumentCount());
-        }
-        Bson filter = eq("tenantId", tenantId);
-        return new StoreStats(users.countDocuments(filter), conversations.countDocuments(filter),
-                messages.countDocuments(filter));
+        return call(() -> {
+            if (tenantId == null) {
+                return new StoreStats(users.estimatedDocumentCount(), conversations.estimatedDocumentCount(),
+                        messages.estimatedDocumentCount());
+            }
+            Bson filter = eq("tenantId", tenantId);
+            return new StoreStats(users.countDocuments(filter), conversations.countDocuments(filter),
+                    messages.countDocuments(filter));
+        });
     }
 
     // ------------------------------------------------------------------ claims
@@ -599,22 +657,13 @@ public class MongoMessageStore implements MessageStore {
                 }
                 continue;
             }
-            sleep(Math.min(200, 5L << Math.min(attempt, 5)));
-        }
-    }
-
-    private static void sleep(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while waiting for a concurrent write", e);
+            StoreSupport.backoff(COMPONENT, Math.min(200, 5L << Math.min(attempt, 5)));
         }
     }
 
     private static boolean isDuplicateKey(MongoException e) {
         return ErrorCategory.fromErrorCode(e.getCode()) == ErrorCategory.DUPLICATE_KEY
-                || (e instanceof com.mongodb.MongoBulkWriteException bulk && bulk.getWriteErrors().stream()
+                || (e instanceof MongoBulkWriteException bulk && bulk.getWriteErrors().stream()
                 .anyMatch(w -> ErrorCategory.fromErrorCode(w.getCode()) == ErrorCategory.DUPLICATE_KEY));
     }
 
@@ -674,7 +723,6 @@ public class MongoMessageStore implements MessageStore {
     }
 
     private static Document conversationDoc(Conversation c) {
-        Instant activity = activity(c);
         return new Document("_id", key(c.getTenantId(), c.getId()))
                 .append("tenantId", c.getTenantId())
                 .append("conversationId", c.getId())
@@ -689,7 +737,7 @@ public class MongoMessageStore implements MessageStore {
                 .append("lastMessagePreview", c.getLastMessagePreview())
                 .append("lastMessageSenderId", c.getLastMessageSenderId())
                 .append("lastMessageAt", date(c.getLastMessageAt()))
-                .append("activityAt", date(activity))
+                .append("activityAt", date(c.activityAt()))
                 .append("metadata", Json.write(c.getMetadata()))
                 .append("createdAt", date(c.getCreatedAt()))
                 .append("updatedAt", date(c.getUpdatedAt()));

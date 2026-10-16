@@ -1,9 +1,13 @@
 package com.ayush.chat.store.firestore;
 
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.store.MessagePreview;
 import com.ayush.chat.store.MessageStore;
+import com.ayush.chat.store.UserSearch;
 import com.ayush.chat.store.model.AppendResult;
 import com.ayush.chat.store.model.ChatMessage;
 import com.ayush.chat.store.model.ChatUser;
@@ -27,6 +31,7 @@ import com.google.cloud.firestore.QueryDocumentSnapshot;
 import com.google.cloud.firestore.TransactionOptions;
 import com.google.cloud.firestore.WriteBatch;
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Instant;
@@ -44,7 +49,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * {@link MessageStore} on Google Cloud Firestore (native mode). Data is laid out hierarchically
@@ -67,9 +74,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Firestore sustains roughly one write per second per document, which bounds a single very
  * busy conversation (not the tenant). Document ids are escaped so any user/conversation id is a
  * legal, collision-free document id. Metadata is stored as JSON text (tenant-defined keys).
+ * <p>
+ * Every call goes through {@link #await}: Firestore failures, and calls after {@link #close()},
+ * surface as {@link InfrastructureUnavailableException} (503).
  */
 @Slf4j
 public class FirestoreMessageStore implements MessageStore {
+
+    private static final String COMPONENT = ConnectorKind.MESSAGE_STORE.getDisplayName();
 
     /** Upper bound on memberships read per inbox request (the inbox is sorted client-side). */
     private static final int INBOX_SCAN_LIMIT = 5_000;
@@ -107,7 +119,7 @@ public class FirestoreMessageStore implements MessageStore {
             throw new IllegalStateException("Interrupted", e);
         } catch (ExecutionException e) {
             throw e.getCause() instanceof RuntimeException r ? r : new IllegalStateException(e.getCause());
-        } catch (java.util.concurrent.TimeoutException e) {
+        } catch (TimeoutException e) {
             throw new IllegalStateException("timed out after 15s", e);
         }
     }
@@ -234,7 +246,7 @@ public class FirestoreMessageStore implements MessageStore {
     @Override
     public ChatUser upsertUser(ChatUser user) {
         DocumentReference ref = userRef(user.getTenantId(), user.getId());
-        Map<String, Object> stored = await(db.runTransaction(tx -> {
+        Map<String, Object> stored = await(() -> db.runTransaction(tx -> {
             DocumentSnapshot existing = tx.get(ref).get();
             Map<String, Object> doc = userDoc(user);
             if (existing.exists()) {
@@ -251,7 +263,7 @@ public class FirestoreMessageStore implements MessageStore {
 
     @Override
     public Optional<ChatUser> findUser(String tenantId, String userId) {
-        DocumentSnapshot snap = await(userRef(tenantId, userId).get());
+        DocumentSnapshot snap = await(() -> userRef(tenantId, userId).get());
         return snap.exists() ? Optional.of(toUser(snap.getData())) : Optional.empty();
     }
 
@@ -267,10 +279,10 @@ public class FirestoreMessageStore implements MessageStore {
         if (limit <= 0) {
             return List.of();
         }
-        String q = query == null ? "" : query.trim().toLowerCase();
+        String q = UserSearch.normalize(query);
         Query byId = users(tenantId).orderBy("id");
         if (q.isEmpty()) {
-            return await(byId.offset(Math.max(0, offset)).limit(limit).get()).getDocuments().stream()
+            return await(() -> byId.offset(Math.max(0, offset)).limit(limit).get()).getDocuments().stream()
                     .map(s -> toUser(s.getData())).toList();
         }
         List<ChatUser> result = new ArrayList<>();
@@ -278,10 +290,10 @@ public class FirestoreMessageStore implements MessageStore {
         DocumentSnapshot last = null;
         while (true) {
             Query page = last == null ? byId.limit(PAGE_SIZE) : byId.startAfter(last).limit(PAGE_SIZE);
-            List<QueryDocumentSnapshot> docs = await(page.get()).getDocuments();
+            List<QueryDocumentSnapshot> docs = await(() -> page.get()).getDocuments();
             for (QueryDocumentSnapshot doc : docs) {
                 ChatUser u = toUser(doc.getData());
-                if (contains(u.getId(), q) || contains(u.getDisplayName(), q) || contains(u.getEmail(), q)) {
+                if (UserSearch.matches(u, q)) {
                     if (skipped++ >= offset) {
                         result.add(u);
                         if (result.size() >= limit) {
@@ -297,18 +309,14 @@ public class FirestoreMessageStore implements MessageStore {
         }
     }
 
-    private static boolean contains(String value, String q) {
-        return value != null && value.toLowerCase().contains(q);
-    }
-
     @Override
     public long countUsers(String tenantId) {
-        return await(users(tenantId).count().get()).getCount();
+        return await(() -> users(tenantId).count().get()).getCount();
     }
 
     @Override
     public void updateLastSeen(String tenantId, String userId, Instant lastSeenAt) {
-        ignoreNotFound(() -> await(userRef(tenantId, userId).update("lastSeenAt", ts(lastSeenAt))));
+        ignoreNotFound(() -> await(() -> userRef(tenantId, userId).update("lastSeenAt", ts(lastSeenAt))));
     }
 
     // ------------------------------------------------------------------ blocks
@@ -317,20 +325,20 @@ public class FirestoreMessageStore implements MessageStore {
     public void setBlocked(String tenantId, String blockerId, String blockedId, boolean blocked) {
         DocumentReference ref = blocks(tenantId, blockerId).document(docId(blockedId));
         if (blocked) {
-            await(ref.set(Map.of("blockedId", blockedId, "createdAt", ts(Instant.now()))));
+            await(() -> ref.set(Map.of("blockedId", blockedId, "createdAt", ts(Instant.now()))));
         } else {
-            await(ref.delete());
+            await(() -> ref.delete());
         }
     }
 
     @Override
     public boolean isBlocked(String tenantId, String blockerId, String blockedId) {
-        return await(blocks(tenantId, blockerId).document(docId(blockedId)).get()).exists();
+        return await(() -> blocks(tenantId, blockerId).document(docId(blockedId)).get()).exists();
     }
 
     @Override
     public List<String> listBlocked(String tenantId, String blockerId) {
-        return await(blocks(tenantId, blockerId).orderBy("blockedId").get()).getDocuments().stream()
+        return await(() -> blocks(tenantId, blockerId).orderBy("blockedId").get()).getDocuments().stream()
                 .map(d -> d.getString("blockedId")).toList();
     }
 
@@ -344,7 +352,7 @@ public class FirestoreMessageStore implements MessageStore {
         if (conversation.getType() == Conversation.Type.DIRECT) {
             DocumentReference index = directRef(tenantId, conversation.getDirectKey());
             // one transaction: the direct-key index, the conversation and its members appear together
-            return await(db.runTransaction(tx -> {
+            return await(() -> db.runTransaction(tx -> {
                 DocumentSnapshot existing = tx.get(index).get();
                 if (existing.exists()) {
                     DocumentSnapshot winner = tx.get(conversationRef(tenantId, existing.getString("conversationId"))).get();
@@ -374,16 +382,16 @@ public class FirestoreMessageStore implements MessageStore {
                 ops++;
             }
             if (++ops >= WRITE_BATCH) {
-                await(batch.commit());
+                await(batch::commit);
                 batch = db.batch();
                 ops = 0;
             }
         }
         if (ops > 0) {
-            await(batch.commit());
+            await(batch::commit);
         }
         try {
-            await(ref.create(doc));
+            await(() -> ref.create(doc));
         } catch (RuntimeException e) {
             if (!hasStatus(e, Status.Code.ALREADY_EXISTS, StatusCode.Code.ALREADY_EXISTS)) {
                 throw e;
@@ -396,13 +404,13 @@ public class FirestoreMessageStore implements MessageStore {
 
     @Override
     public Optional<Conversation> findConversation(String tenantId, String conversationId) {
-        DocumentSnapshot snap = await(conversationRef(tenantId, conversationId).get());
+        DocumentSnapshot snap = await(() -> conversationRef(tenantId, conversationId).get());
         return snap.exists() ? Optional.of(toConversation(snap.getData())) : Optional.empty();
     }
 
     @Override
     public Optional<Conversation> findDirectConversation(String tenantId, String directKey) {
-        DocumentSnapshot index = await(directRef(tenantId, directKey).get());
+        DocumentSnapshot index = await(() -> directRef(tenantId, directKey).get());
         return index.exists() ? findConversation(tenantId, index.getString("conversationId")) : Optional.empty();
     }
 
@@ -414,7 +422,7 @@ public class FirestoreMessageStore implements MessageStore {
         fields.put("avatarUrl", conversation.getAvatarUrl());
         fields.put("metadata", Json.write(conversation.getMetadata()));
         fields.put("updatedAt", ts(conversation.getUpdatedAt()));
-        ignoreNotFound(() -> await(conversationRef(conversation.getTenantId(), conversation.getId()).update(fields)));
+        ignoreNotFound(() -> await(() -> conversationRef(conversation.getTenantId(), conversation.getId()).update(fields)));
     }
 
     @Override
@@ -422,7 +430,7 @@ public class FirestoreMessageStore implements MessageStore {
         if (limit <= 0) {
             return List.of();
         }
-        List<String> conversationIds = await(userRef(tenantId, userId).collection(prefix + "memberships")
+        List<String> conversationIds = await(() -> userRef(tenantId, userId).collection(prefix + "memberships")
                 .limit(INBOX_SCAN_LIMIT).get()).getDocuments().stream()
                 .map(d -> d.getString("conversationId")).toList();
         List<DocumentSnapshot> convs = getAll(conversationIds.stream().map(id -> conversationRef(tenantId, id)).toList());
@@ -437,24 +445,20 @@ public class FirestoreMessageStore implements MessageStore {
             }
             Conversation conversation = toConversation(c.getData());
             Participant self = toParticipant(p.getData());
-            if (self.isActive() && (before == null || activity(conversation).isBefore(before))) {
+            if (self.isActive() && (before == null || conversation.activityAt().isBefore(before))) {
                 items.add(new InboxItem(conversation, self));
             }
         }
-        items.sort(Comparator.comparing((InboxItem i) -> activity(i.conversation())).reversed()
+        items.sort(Comparator.comparing((InboxItem i) -> i.conversation().activityAt()).reversed()
                 .thenComparing(i -> i.conversation().getId()));
         return items.size() > limit ? new ArrayList<>(items.subList(0, limit)) : items;
-    }
-
-    private static Instant activity(Conversation c) {
-        return c.getLastMessageAt() != null ? c.getLastMessageAt() : c.getCreatedAt();
     }
 
     // ------------------------------------------------------------------ participants
 
     @Override
     public List<Participant> listParticipants(String tenantId, String conversationId) {
-        return await(participants(tenantId, conversationId).get()).getDocuments().stream()
+        return await(() -> participants(tenantId, conversationId).get()).getDocuments().stream()
                 .map(d -> toParticipant(d.getData()))
                 .filter(Participant::isActive)
                 .sorted(Comparator.comparing(Participant::getUserId))
@@ -463,7 +467,7 @@ public class FirestoreMessageStore implements MessageStore {
 
     @Override
     public Optional<Participant> findParticipant(String tenantId, String conversationId, String userId) {
-        DocumentSnapshot snap = await(participantRef(tenantId, conversationId, userId).get());
+        DocumentSnapshot snap = await(() -> participantRef(tenantId, conversationId, userId).get());
         return snap.exists() ? Optional.of(toParticipant(snap.getData())) : Optional.empty();
     }
 
@@ -471,7 +475,7 @@ public class FirestoreMessageStore implements MessageStore {
     public void upsertParticipant(Participant p) {
         DocumentReference ref = participantRef(p.getTenantId(), p.getConversationId(), p.getUserId());
         DocumentReference membership = membershipRef(p.getTenantId(), p.getUserId(), p.getConversationId());
-        await(db.runTransaction(tx -> {
+        await(() -> db.runTransaction(tx -> {
             DocumentSnapshot existing = tx.get(ref).get();
             Map<String, Object> doc = participantDoc(p);
             if (existing.exists()) {
@@ -497,7 +501,7 @@ public class FirestoreMessageStore implements MessageStore {
         WriteBatch batch = db.batch();
         batch.update(participantRef(tenantId, conversationId, userId), fields);
         batch.delete(membershipRef(tenantId, userId, conversationId));
-        ignoreNotFound(() -> await(batch.commit()));
+        ignoreNotFound(() -> await(batch::commit));
     }
 
     @Override
@@ -507,7 +511,7 @@ public class FirestoreMessageStore implements MessageStore {
             return;
         }
         DocumentReference ref = participantRef(tenantId, conversationId, userId);
-        await(db.runTransaction(tx -> {
+        await(() -> db.runTransaction(tx -> {
             DocumentSnapshot snap = tx.get(ref).get();
             Map<String, Object> updates = snap.exists() ? watermarkUpdates(snap, delivered, readSeq) : Map.of();
             if (!updates.isEmpty()) {
@@ -543,11 +547,11 @@ public class FirestoreMessageStore implements MessageStore {
         DocumentReference msgRef = messages(tenantId, conversationId).document(docId(message.getId()));
         DocumentReference dedupeRef = message.getClientMsgId() == null ? null
                 : clientMsgRef(tenantId, conversationId, message.getSenderId(), message.getClientMsgId());
-        return await(db.runTransaction(tx -> {
+        return await(() -> db.runTransaction(tx -> {
             // all reads first, as Firestore transactions require
             DocumentSnapshot conv = tx.get(convRef).get();
             if (!conv.exists()) {
-                throw new IllegalArgumentException("Conversation not found: " + conversationId);
+                throw DomainException.notFound("Conversation");
             }
             if (dedupeRef != null) {
                 DocumentSnapshot claim = tx.get(dedupeRef).get();
@@ -587,7 +591,7 @@ public class FirestoreMessageStore implements MessageStore {
 
     @Override
     public Optional<ChatMessage> findMessage(String tenantId, String conversationId, String messageId) {
-        DocumentSnapshot snap = await(messages(tenantId, conversationId).document(docId(messageId)).get());
+        DocumentSnapshot snap = await(() -> messages(tenantId, conversationId).document(docId(messageId)).get());
         return snap.exists() ? Optional.of(toMessage(snap.getData())) : Optional.empty();
     }
 
@@ -598,11 +602,11 @@ public class FirestoreMessageStore implements MessageStore {
         }
         CollectionReference col = messages(tenantId, conversationId);
         if (afterSeq != null) {
-            return await(col.whereGreaterThan("seq", afterSeq).orderBy("seq").limit(limit).get()).getDocuments()
+            return await(() -> col.whereGreaterThan("seq", afterSeq).orderBy("seq").limit(limit).get()).getDocuments()
                     .stream().map(d -> toMessage(d.getData())).toList();
         }
         Query newest = beforeSeq == null ? col : col.whereLessThan("seq", beforeSeq);
-        List<ChatMessage> result = new ArrayList<>(await(newest.orderBy("seq", Query.Direction.DESCENDING).limit(limit)
+        List<ChatMessage> result = new ArrayList<>(await(() -> newest.orderBy("seq", Query.Direction.DESCENDING).limit(limit)
                 .get()).getDocuments().stream().map(d -> toMessage(d.getData())).toList());
         Collections.reverse(result);
         return result;
@@ -619,8 +623,9 @@ public class FirestoreMessageStore implements MessageStore {
         fields.put("deleted", message.isDeleted());
         fields.put("deletedAt", ts(message.getDeletedAt()));
         fields.put("metadata", Json.write(message.getMetadata()));
-        DocumentReference ref = messages(message.getTenantId(), message.getConversationId()).document(docId(message.getId()));
-        ignoreNotFound(() -> await(ref.update(fields)));
+        DocumentReference ref = messages(message.getTenantId(), message.getConversationId())
+                .document(docId(message.getId()));
+        ignoreNotFound(() -> await(() -> ref.update(fields)));
     }
 
     // ------------------------------------------------------------------ admin
@@ -633,16 +638,16 @@ public class FirestoreMessageStore implements MessageStore {
     public StoreStats stats(String tenantId) {
         if (tenantId == null) {
             return new StoreStats(
-                    await(db.collectionGroup(prefix + "users").count().get()).getCount(),
-                    await(db.collectionGroup(prefix + "conversations").count().get()).getCount(),
-                    await(db.collectionGroup(prefix + "messages").count().get()).getCount());
+                    await(() -> db.collectionGroup(prefix + "users").count().get()).getCount(),
+                    await(() -> db.collectionGroup(prefix + "conversations").count().get()).getCount(),
+                    await(() -> db.collectionGroup(prefix + "messages").count().get()).getCount());
         }
         long messages = 0;
         Query byId = conversations(tenantId).select("lastSeq").orderBy(FieldPath.documentId());
         DocumentSnapshot last = null;
         while (true) {
             Query page = last == null ? byId.limit(PAGE_SIZE) : byId.startAfter(last).limit(PAGE_SIZE);
-            List<QueryDocumentSnapshot> docs = await(page.get()).getDocuments();
+            List<QueryDocumentSnapshot> docs = await(() -> page.get()).getDocuments();
             for (QueryDocumentSnapshot doc : docs) {
                 messages += longValue(doc.get("lastSeq"));
             }
@@ -651,7 +656,7 @@ public class FirestoreMessageStore implements MessageStore {
             }
             last = docs.get(docs.size() - 1);
         }
-        return new StoreStats(countUsers(tenantId), await(conversations(tenantId).count().get()).getCount(), messages);
+        return new StoreStats(countUsers(tenantId), await(() -> conversations(tenantId).count().get()).getCount(), messages);
     }
 
     // ------------------------------------------------------------------ helpers
@@ -661,7 +666,7 @@ public class FirestoreMessageStore implements MessageStore {
         for (int from = 0; from < refs.size(); from += GET_ALL_BATCH) {
             List<DocumentReference> chunk = refs.subList(from, Math.min(refs.size(), from + GET_ALL_BATCH));
             Map<String, DocumentSnapshot> byPath = new HashMap<>();
-            for (DocumentSnapshot snap : await(db.getAll(chunk.toArray(new DocumentReference[0])))) {
+            for (DocumentSnapshot snap : await(() -> db.getAll(chunk.toArray(new DocumentReference[0])))) {
                 byPath.put(snap.getReference().getPath(), snap);
             }
             chunk.forEach(ref -> result.add(byPath.get(ref.getPath())));
@@ -669,21 +674,28 @@ public class FirestoreMessageStore implements MessageStore {
         return result;
     }
 
-    private static <T> T await(ApiFuture<T> future) {
+    /**
+     * Issues one Firestore call and waits for it. Outcomes our own transaction code throws (such as
+     * not found) surface unchanged; every Firestore failure, and use after close, is a 503.
+     */
+    private <T> T await(Supplier<ApiFuture<T>> call) {
+        if (closed.get()) {
+            throw new InfrastructureUnavailableException(COMPONENT, "store closed");
+        }
         try {
-            return future.get();
+            return call.get().get();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while waiting for Firestore", e);
+            throw new InfrastructureUnavailableException(COMPONENT, e);
         } catch (ExecutionException e) {
-            // surface our own validation errors thrown inside transactions unchanged
             for (Throwable t = e.getCause(); t != null; t = t.getCause()) {
-                if (t instanceof IllegalArgumentException iae) {
-                    throw iae;
+                if (t instanceof DomainException domain) {
+                    throw domain;
                 }
             }
-            Throwable cause = e.getCause();
-            throw cause instanceof RuntimeException r ? r : new IllegalStateException(cause);
+            throw new InfrastructureUnavailableException(COMPONENT, e.getCause());
+        } catch (FirestoreException | ApiException | StatusRuntimeException e) {
+            throw new InfrastructureUnavailableException(COMPONENT, e); // failed before a future was returned
         }
     }
 
@@ -705,7 +717,7 @@ public class FirestoreMessageStore implements MessageStore {
             if (t instanceof ApiException api && api.getStatusCode().getCode() == gax) {
                 return true;
             }
-            if (t instanceof io.grpc.StatusRuntimeException sre && sre.getStatus().getCode() == grpc) {
+            if (t instanceof StatusRuntimeException sre && sre.getStatus().getCode() == grpc) {
                 return true;
             }
         }

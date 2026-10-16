@@ -1,19 +1,23 @@
 package com.ayush.chat.push.webhook;
 
-import com.ayush.chat.core.error.DomainException;
-import com.ayush.chat.core.net.OutboundUrlPolicy;
 import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorConfig;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.ConnectorSettings;
+import com.ayush.chat.core.connector.Maturity;
+import com.ayush.chat.core.crypto.WebhookSignature;
+import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
+import com.ayush.chat.core.net.OutboundUrlPolicy;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.push.PushSender;
 import com.ayush.chat.push.PushSender.PushNotification;
 import com.ayush.chat.push.PushSender.PushResult;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpServer;
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -101,11 +105,14 @@ class WebhookPushSenderTest {
         ConnectorDescriptor d = factory.descriptor();
         assertThat(d.kind()).isEqualTo(ConnectorKind.PUSH);
         assertThat(d.id()).isEqualTo("webhook");
-        assertThat(d.maturity()).isEqualTo("GA");
+        assertThat(d.maturity()).isEqualTo(Maturity.GA);
         assertThat(d.field("url").required()).isTrue();
         assertThat(d.field("url").type()).isEqualTo(ConfigField.FieldType.URL);
         assertThat(d.field("secret").type()).isEqualTo(ConfigField.FieldType.SECRET);
+        assertThat(d.field("secret").description()).contains(WebhookSignature.TIMESTAMP_HEADER)
+                .contains(WebhookSignature.SIGNATURE_HEADER).contains("timestamp + \".\" + body");
         assertThat(d.field("timeoutMs").defaultValue()).isEqualTo(5000);
+        assertThat(factory.descriptor()).isSameAs(d);
     }
 
     @Test
@@ -121,12 +128,14 @@ class WebhookPushSenderTest {
         assertThat(request.path()).isEqualTo("/hook");
         assertThat(request.headers().getFirst("Content-Type")).isEqualTo("application/json");
 
-        String expectedSignature = "sha256=" + hmacHex("s3cr3t", request.body());
-        assertThat(request.headers().getFirst("X-Chat-Signature")).isEqualTo(expectedSignature);
+        // The platform-wide scheme: HMAC-SHA256 over "<timestamp>.<raw body>", checked against a reference HMAC.
+        String timestampHeader = request.headers().getFirst(WebhookSignature.TIMESTAMP_HEADER);
+        String body = new String(request.body(), StandardCharsets.UTF_8);
+        String expectedSignature = "sha256=" + hmacHex("s3cr3t", timestampHeader + "." + body);
+        assertThat(request.headers().getFirst(WebhookSignature.SIGNATURE_HEADER)).isEqualTo(expectedSignature);
 
-        Map<String, Object> json = Json.readMap(new String(request.body(), StandardCharsets.UTF_8));
-        String timestampHeader = request.headers().getFirst("X-Chat-Timestamp");
-        assertThat(Long.parseLong(timestampHeader)).isCloseTo(System.currentTimeMillis() / 1000, org.assertj.core.data.Offset.offset(60L));
+        Map<String, Object> json = Json.readMap(body);
+        assertThat(Long.parseLong(timestampHeader)).isCloseTo(System.currentTimeMillis() / 1000, Offset.offset(60L));
         assertThat(((Number) json.get("timestamp")).longValue()).isEqualTo(Long.parseLong(timestampHeader));
         assertThat(json).containsEntry("event", "push")
                 .containsEntry("tenantId", "tenant-1")
@@ -145,8 +154,8 @@ class WebhookPushSenderTest {
 
         assertThat(sender.send(notification(Set.of("t"))).delivered()).isEqualTo(1);
         Captured request = requests.poll(5, TimeUnit.SECONDS);
-        assertThat(request.headers().containsKey("X-Chat-Signature")).isFalse();
-        assertThat(request.headers().getFirst("X-Chat-Timestamp")).isNotBlank();
+        assertThat(request.headers().containsKey(WebhookSignature.SIGNATURE_HEADER)).isFalse();
+        assertThat(request.headers().getFirst(WebhookSignature.TIMESTAMP_HEADER)).isNotBlank();
     }
 
     @Test
@@ -239,19 +248,28 @@ class WebhookPushSenderTest {
         closing.close();
         closing.close();
         assertThat(closing.health().healthy()).isFalse();
-        assertThatThrownBy(() -> closing.send(notification(Set.of("a")))).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> closing.send(notification(Set.of("a"))))
+                .isInstanceOf(InfrastructureUnavailableException.class);
     }
 
     @Test
-    void signMatchesReferenceHmac() throws Exception {
-        byte[] body = "{\"a\":1}".getBytes(StandardCharsets.UTF_8);
-        assertThat(WebhookPushSender.sign("key".getBytes(StandardCharsets.UTF_8), body))
-                .isEqualTo("sha256=" + hmacHex("key", body));
+    void receiverVerifiesWithTheSharedSchemeAndRejectsTampering() throws Exception {
+        sender = create(Map.of("url", url(), "secret", "shared"));
+        sender.send(notification(Set.of("a")));
+        Captured request = requests.poll(5, TimeUnit.SECONDS);
+        long timestamp = Long.parseLong(request.headers().getFirst(WebhookSignature.TIMESTAMP_HEADER));
+        String body = new String(request.body(), StandardCharsets.UTF_8);
+        String signature = request.headers().getFirst(WebhookSignature.SIGNATURE_HEADER);
+
+        assertThat(WebhookSignature.verify("shared", timestamp, body, signature)).isTrue();
+        assertThat(WebhookSignature.verify("shared", timestamp - 600, body, signature)).as("replayed timestamp").isFalse();
+        assertThat(WebhookSignature.verify("shared", timestamp, body + " ", signature)).as("altered body").isFalse();
+        assertThat(WebhookSignature.verify("other", timestamp, body, signature)).as("wrong secret").isFalse();
     }
 
-    private static String hmacHex(String secret, byte[] body) throws Exception {
+    private static String hmacHex(String secret, String payload) throws Exception {
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-        return HexFormat.of().formatHex(mac.doFinal(body));
+        return HexFormat.of().formatHex(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8)));
     }
 }

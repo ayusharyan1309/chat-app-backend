@@ -8,6 +8,7 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorSettings;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.util.Ids;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.Consumer;
@@ -107,11 +108,12 @@ class RedisEventBusTest extends EventBusConformanceTest {
         ConnectorDescriptor d = factory.descriptor();
         assertThat(d.kind()).isEqualTo(ConnectorKind.EVENT_BUS);
         assertThat(d.id()).isEqualTo("redis");
-        assertThat(d.maturity()).isEqualTo("GA");
+        assertThat(d.maturity()).isEqualTo(Maturity.GA);
         assertThat(d.field("uri").type()).isEqualTo(ConfigField.FieldType.SECRET);
         assertThat(d.field("uri").required()).isTrue();
         assertThat(d.field("channelPrefix").defaultValue()).isEqualTo("chat.");
         assertThat(d.field("streamMaxLen").defaultValue()).isEqualTo(100_000);
+        assertThat(factory.descriptor()).isSameAs(d);
     }
 
     @Test

@@ -1,9 +1,14 @@
 package com.ayush.chat.store.cassandra;
 
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.store.MessagePreview;
 import com.ayush.chat.store.MessageStore;
+import com.ayush.chat.store.StoreSupport;
+import com.ayush.chat.store.UserSearch;
 import com.ayush.chat.store.model.AppendResult;
 import com.ayush.chat.store.model.ChatMessage;
 import com.ayush.chat.store.model.ChatUser;
@@ -41,6 +46,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -77,9 +83,14 @@ import java.util.stream.IntStream;
  * <p>
  * Rows created implicitly by an {@code UPDATE} on a missing key (e.g. a receipt for a user who
  * is not a participant) are "ghosts" without their identity columns and are ignored on read.
+ * <p>
+ * Driver failures in data operations, and calls after {@link #close()}, surface as
+ * {@link InfrastructureUnavailableException} (503).
  */
 @Slf4j
 public class CassandraMessageStore implements MessageStore {
+
+    private static final String COMPONENT = ConnectorKind.MESSAGE_STORE.getDisplayName();
 
     /** Messages per partition. Bounds partition size; history paging walks buckets. */
     static final long BUCKET_SIZE = 1_000;
@@ -170,9 +181,9 @@ public class CassandraMessageStore implements MessageStore {
             throw new IllegalArgumentException("Invalid table prefix '" + tablePrefix
                     + "': use up to 24 letters, digits and underscores");
         }
-        this.keyspace = options.keyspace().toLowerCase();
+        this.keyspace = options.keyspace().toLowerCase(Locale.ROOT);
         this.localDatacenter = options.localDatacenter();
-        this.prefix = tablePrefix.toLowerCase();
+        this.prefix = tablePrefix.toLowerCase(Locale.ROOT);
 
         DriverConfigLoader config = DriverConfigLoader.programmaticBuilder()
                 .withString(DefaultDriverOption.SESSION_NAME, "chat-store")
@@ -357,14 +368,33 @@ public class CassandraMessageStore implements MessageStore {
             try {
                 return session.prepare(statement);
             } catch (InvalidQueryException e) {
-                String message = String.valueOf(e.getMessage()).toLowerCase();
+                String message = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
                 boolean pending = message.contains("unconfigured table") || message.contains("does not exist");
                 if (!pending || System.currentTimeMillis() > deadline) {
                     throw e;
                 }
-                sleep(1_000);
+                StoreSupport.backoff(COMPONENT, 1_000);
             }
         }
+    }
+
+    /** Runs one data operation: driver failures (and use after close) become a retryable 503. */
+    private <T> T call(Supplier<T> operation) {
+        if (closed.get()) {
+            throw new InfrastructureUnavailableException(COMPONENT, "store closed");
+        }
+        try {
+            return operation.get();
+        } catch (DriverException e) {
+            throw new InfrastructureUnavailableException(COMPONENT, e);
+        }
+    }
+
+    private void run(Runnable operation) {
+        call(() -> {
+            operation.run();
+            return null;
+        });
     }
 
     @Override
@@ -404,217 +434,230 @@ public class CassandraMessageStore implements MessageStore {
 
     @Override
     public ChatUser upsertUser(ChatUser user) {
-        String tenantId = user.getTenantId();
-        String userId = user.getId();
-        // created_at is written once, by compare-and-set, so it survives later upserts and marks the
-        // row as a real user (rows touched only by updateLastSeen have no created_at).
-        Row existing = session.execute(selectUserCreatedAt.bind(tenantId, userId)).one();
-        boolean created = false;
-        if (existing == null || existing.isNull("created_at")) {
-            Instant createdAt = user.getCreatedAt() != null ? user.getCreatedAt() : Instant.now();
-            created = session.execute(claimUserCreatedAt.bind(createdAt, tenantId, userId)).wasApplied();
-        }
-        List<String> tokens = user.getPushTokens() == null ? List.of() : new ArrayList<>(user.getPushTokens());
-        Object[] fields = {user.getDisplayName(), user.getEmail(), user.getPhone(), user.getAvatarUrl(), user.getAbout(),
-                tokens, Json.write(user.getMetadata()), user.isDeactivated(), user.getUpdatedAt()};
-        if (user.getLastSeenAt() != null) {
-            session.execute(updateUserWithLastSeen.bind(concat(fields, user.getLastSeenAt(), tenantId, userId)));
-        } else {
-            session.execute(updateUser.bind(concat(fields, tenantId, userId)));
-        }
-        if (created) {
-            count(tenantId, "users");
-        }
-        return findUser(tenantId, userId).orElseThrow();
+        return call(() -> {
+            String tenantId = user.getTenantId();
+            String userId = user.getId();
+            // created_at is written once, by compare-and-set, so it survives later upserts and marks the
+            // row as a real user (rows touched only by updateLastSeen have no created_at).
+            Row existing = session.execute(selectUserCreatedAt.bind(tenantId, userId)).one();
+            boolean created = false;
+            if (existing == null || existing.isNull("created_at")) {
+                Instant createdAt = user.getCreatedAt() != null ? user.getCreatedAt() : Instant.now();
+                created = session.execute(claimUserCreatedAt.bind(createdAt, tenantId, userId)).wasApplied();
+            }
+            List<String> tokens = user.getPushTokens() == null ? List.of() : new ArrayList<>(user.getPushTokens());
+            Object[] fields = {user.getDisplayName(), user.getEmail(), user.getPhone(), user.getAvatarUrl(), user.getAbout(),
+                    tokens, Json.write(user.getMetadata()), user.isDeactivated(), user.getUpdatedAt()};
+            if (user.getLastSeenAt() != null) {
+                session.execute(updateUserWithLastSeen.bind(
+                        StoreSupport.concat(fields, user.getLastSeenAt(), tenantId, userId)));
+            } else {
+                session.execute(updateUser.bind(StoreSupport.concat(fields, tenantId, userId)));
+            }
+            if (created) {
+                count(tenantId, "users");
+            }
+            return findUser(tenantId, userId).orElseThrow();
+        });
     }
 
     @Override
     public Optional<ChatUser> findUser(String tenantId, String userId) {
-        return Optional.ofNullable(toUser(session.execute(selectUser.bind(tenantId, userId)).one()));
+        return call(() -> Optional.ofNullable(toUser(session.execute(selectUser.bind(tenantId, userId)).one())));
     }
 
     @Override
     public List<ChatUser> findUsers(String tenantId, Collection<String> userIds) {
-        List<String> ids = userIds.stream().distinct().toList();
-        Map<String, ChatUser> found = new LinkedHashMap<>();
-        for (int from = 0; from < ids.size(); from += IN_BATCH) {
-            List<String> chunk = ids.subList(from, Math.min(ids.size(), from + IN_BATCH));
-            for (Row row : session.execute(selectUsersIn.bind(tenantId, chunk))) {
-                ChatUser u = toUser(row);
-                if (u != null) {
-                    found.put(u.getId(), u);
+        return call(() -> {
+            List<String> ids = userIds.stream().distinct().toList();
+            Map<String, ChatUser> found = new LinkedHashMap<>();
+            for (int from = 0; from < ids.size(); from += IN_BATCH) {
+                List<String> chunk = ids.subList(from, Math.min(ids.size(), from + IN_BATCH));
+                for (Row row : session.execute(selectUsersIn.bind(tenantId, chunk))) {
+                    ChatUser u = toUser(row);
+                    if (u != null) {
+                        found.put(u.getId(), u);
+                    }
                 }
             }
-        }
-        return ids.stream().map(found::get).filter(Objects::nonNull).toList();
+            return ids.stream().map(found::get).filter(Objects::nonNull).toList();
+        });
     }
 
     /** Scans the tenant's user partition (ordered by id) and filters client-side. */
     @Override
     public List<ChatUser> searchUsers(String tenantId, String query, int offset, int limit) {
-        if (limit <= 0) {
-            return List.of();
-        }
-        String q = query == null ? "" : query.trim().toLowerCase();
-        List<ChatUser> result = new ArrayList<>();
-        int skipped = 0;
-        for (Row row : session.execute(selectTenantUsers.bind(tenantId).setPageSize(500))) {
-            ChatUser u = toUser(row);
-            if (u == null || !(q.isEmpty() || contains(u.getId(), q) || contains(u.getDisplayName(), q)
-                    || contains(u.getEmail(), q))) {
-                continue;
+        return call(() -> {
+            if (limit <= 0) {
+                return List.of();
             }
-            if (skipped++ < offset) {
-                continue;
+            String q = UserSearch.normalize(query);
+            List<ChatUser> result = new ArrayList<>();
+            int skipped = 0;
+            for (Row row : session.execute(selectTenantUsers.bind(tenantId).setPageSize(500))) {
+                ChatUser u = toUser(row);
+                if (u == null || !UserSearch.matches(u, q)) {
+                    continue;
+                }
+                if (skipped++ < offset) {
+                    continue;
+                }
+                result.add(u);
+                if (result.size() >= limit) {
+                    break;
+                }
             }
-            result.add(u);
-            if (result.size() >= limit) {
-                break;
-            }
-        }
-        return result;
-    }
-
-    private static boolean contains(String value, String q) {
-        return value != null && value.toLowerCase().contains(q);
+            return result;
+        });
     }
 
     @Override
     public long countUsers(String tenantId) {
-        return counters(tenantScope(tenantId)).getOrDefault("users", 0L);
+        return call(() -> counters(tenantScope(tenantId)).getOrDefault("users", 0L));
     }
 
     @Override
     public void updateLastSeen(String tenantId, String userId, Instant lastSeenAt) {
-        session.execute(updateLastSeen.bind(lastSeenAt, tenantId, userId));
+        run(() -> session.execute(updateLastSeen.bind(lastSeenAt, tenantId, userId)));
     }
 
     // ------------------------------------------------------------------ blocks
 
     @Override
     public void setBlocked(String tenantId, String blockerId, String blockedId, boolean blocked) {
-        if (blocked) {
-            session.execute(insertBlock.bind(tenantId, blockerId, blockedId, Instant.now()));
-        } else {
-            session.execute(deleteBlock.bind(tenantId, blockerId, blockedId));
-        }
+        run(() -> {
+            if (blocked) {
+                session.execute(insertBlock.bind(tenantId, blockerId, blockedId, Instant.now()));
+            } else {
+                session.execute(deleteBlock.bind(tenantId, blockerId, blockedId));
+            }
+        });
     }
 
     @Override
     public boolean isBlocked(String tenantId, String blockerId, String blockedId) {
-        return session.execute(selectBlock.bind(tenantId, blockerId, blockedId)).one() != null;
+        return call(() -> session.execute(selectBlock.bind(tenantId, blockerId, blockedId)).one() != null);
     }
 
     @Override
     public List<String> listBlocked(String tenantId, String blockerId) {
-        List<String> result = new ArrayList<>();
-        for (Row row : session.execute(selectBlocks.bind(tenantId, blockerId))) {
-            result.add(row.getString("blocked_id"));
-        }
-        return result;
+        return call(() -> {
+            List<String> result = new ArrayList<>();
+            for (Row row : session.execute(selectBlocks.bind(tenantId, blockerId))) {
+                result.add(row.getString("blocked_id"));
+            }
+            return result;
+        });
     }
 
     // ------------------------------------------------------------------ conversations
 
     @Override
     public Conversation createConversation(Conversation conversation, List<Participant> initial) {
-        String tenantId = conversation.getTenantId();
-        String id = conversation.getId();
-        if (conversation.getType() == Conversation.Type.DIRECT) {
-            String directKey = conversation.getDirectKey();
-            Optional<Conversation> existing = claim(
-                    () -> session.execute(claimDirect.bind(tenantId, directKey, id, Instant.now())),
-                    stale -> session.execute(takeoverDirect.bind(id, Instant.now(), tenantId, directKey, stale)).wasApplied(),
-                    "conversation_id", id, owner -> findConversation(tenantId, owner));
-            if (existing.isPresent()) {
-                return existing.get();
+        return call(() -> {
+            String tenantId = conversation.getTenantId();
+            String id = conversation.getId();
+            if (conversation.getType() == Conversation.Type.DIRECT) {
+                String directKey = conversation.getDirectKey();
+                Optional<Conversation> existing = claim(
+                        () -> session.execute(claimDirect.bind(tenantId, directKey, id, Instant.now())),
+                        stale -> session.execute(takeoverDirect.bind(id, Instant.now(), tenantId, directKey, stale))
+                                .wasApplied(),
+                        "conversation_id", id, owner -> findConversation(tenantId, owner));
+                if (existing.isPresent()) {
+                    return existing.get();
+                }
             }
-        }
-        // Members first: whoever can see the conversation row can also see its participants.
-        parallel(initial, p -> writeParticipant(p, true));
-        ResultSet inserted = session.execute(bindUnsetNulls(insertConversation, tenantId, id,
-                conversation.getType() == null ? null : conversation.getType().name(), conversation.getDirectKey(),
-                conversation.getTitle(), conversation.getDescription(), conversation.getAvatarUrl(),
-                conversation.getCreatedBy(), conversation.getLastSeq(), conversation.getLastMessageId(),
-                conversation.getLastMessagePreview(), conversation.getLastMessageSenderId(),
-                conversation.getLastMessageAt(), Json.write(conversation.getMetadata()), conversation.getCreatedAt(),
-                conversation.getUpdatedAt()));
-        if (!inserted.wasApplied()) {
-            return toConversation(inserted.one()); // same id created twice: keep what is stored
-        }
-        count(tenantId, "conversations");
-        return findConversation(tenantId, id).orElseThrow();
+            // Members first: whoever can see the conversation row can also see its participants.
+            parallel(initial, p -> writeParticipant(p, true));
+            ResultSet inserted = session.execute(bindUnsetNulls(insertConversation, tenantId, id,
+                    conversation.getType() == null ? null : conversation.getType().name(), conversation.getDirectKey(),
+                    conversation.getTitle(), conversation.getDescription(), conversation.getAvatarUrl(),
+                    conversation.getCreatedBy(), conversation.getLastSeq(), conversation.getLastMessageId(),
+                    conversation.getLastMessagePreview(), conversation.getLastMessageSenderId(),
+                    conversation.getLastMessageAt(), Json.write(conversation.getMetadata()), conversation.getCreatedAt(),
+                    conversation.getUpdatedAt()));
+            if (!inserted.wasApplied()) {
+                return toConversation(inserted.one()); // same id created twice: keep what is stored
+            }
+            count(tenantId, "conversations");
+            return findConversation(tenantId, id).orElseThrow();
+        });
     }
 
     @Override
     public Optional<Conversation> findConversation(String tenantId, String conversationId) {
-        return Optional.ofNullable(toConversation(session.execute(selectConversation.bind(tenantId, conversationId)).one()));
+        return call(() -> Optional.ofNullable(toConversation(
+                session.execute(selectConversation.bind(tenantId, conversationId)).one())));
     }
 
     @Override
     public Optional<Conversation> findDirectConversation(String tenantId, String directKey) {
-        Row row = session.execute(selectDirect.bind(tenantId, directKey)).one();
-        return row == null ? Optional.empty() : findConversation(tenantId, row.getString("conversation_id"));
+        return call(() -> {
+            Row row = session.execute(selectDirect.bind(tenantId, directKey)).one();
+            return row == null ? Optional.empty() : findConversation(tenantId, row.getString("conversation_id"));
+        });
     }
 
     @Override
     public void updateConversation(Conversation conversation) {
-        // LWT so every write to a conversation row goes through Paxos (consistent cell timestamps)
+        run(() -> // LWT so every write to a conversation row goes through Paxos (consistent cell timestamps)
         // and a missing conversation is not resurrected as a partial row.
         session.execute(updateConversation.bind(conversation.getTitle(), conversation.getDescription(),
                 conversation.getAvatarUrl(), Json.write(conversation.getMetadata()), conversation.getUpdatedAt(),
-                conversation.getTenantId(), conversation.getId()));
+                conversation.getTenantId(), conversation.getId())));
     }
 
     @Override
     public List<InboxItem> listInbox(String tenantId, String userId, int limit, Instant before) {
-        if (limit <= 0) {
-            return List.of();
-        }
-        List<String> conversationIds = new ArrayList<>();
-        for (Row row : session.execute(selectMemberships.bind(tenantId, userId, INBOX_SCAN_LIMIT))) {
-            conversationIds.add(row.getString("conversation_id"));
-        }
-        List<InboxItem> items = parallel(conversationIds, id -> {
-            CompletionStage<AsyncResultSet> conversation = session.executeAsync(selectConversation.bind(tenantId, id));
-            CompletionStage<AsyncResultSet> self = session.executeAsync(selectParticipant.bind(tenantId, id, userId));
-            return conversation.thenCombine(self, (c, p) -> {
-                Conversation conv = toConversation(c.one());
-                Participant participant = toParticipant(p.one());
-                return conv == null || participant == null || !participant.isActive() ? null
-                        : new InboxItem(conv, participant);
+        return call(() -> {
+            if (limit <= 0) {
+                return List.of();
+            }
+            List<String> conversationIds = new ArrayList<>();
+            for (Row row : session.execute(selectMemberships.bind(tenantId, userId, INBOX_SCAN_LIMIT))) {
+                conversationIds.add(row.getString("conversation_id"));
+            }
+            List<InboxItem> items = parallel(conversationIds, id -> {
+                CompletionStage<AsyncResultSet> conversation = session.executeAsync(selectConversation.bind(tenantId, id));
+                CompletionStage<AsyncResultSet> self = session.executeAsync(selectParticipant.bind(tenantId, id, userId));
+                return conversation.thenCombine(self, (c, p) -> {
+                    Conversation conv = toConversation(c.one());
+                    Participant participant = toParticipant(p.one());
+                    return conv == null || participant == null || !participant.isActive() ? null
+                            : new InboxItem(conv, participant);
+                });
             });
+            return items.stream()
+                    .filter(Objects::nonNull)
+                    .filter(i -> before == null || i.conversation().activityAt().isBefore(before))
+                    .sorted(Comparator.comparing((InboxItem i) -> i.conversation().activityAt()).reversed()
+                            .thenComparing(i -> i.conversation().getId()))
+                    .limit(limit)
+                    .toList();
         });
-        return items.stream()
-                .filter(Objects::nonNull)
-                .filter(i -> before == null || activity(i.conversation()).isBefore(before))
-                .sorted(Comparator.comparing((InboxItem i) -> activity(i.conversation())).reversed()
-                        .thenComparing(i -> i.conversation().getId()))
-                .limit(limit)
-                .toList();
-    }
-
-    private static Instant activity(Conversation c) {
-        return c.getLastMessageAt() != null ? c.getLastMessageAt() : c.getCreatedAt();
     }
 
     // ------------------------------------------------------------------ participants
 
     @Override
     public List<Participant> listParticipants(String tenantId, String conversationId) {
-        List<Participant> result = new ArrayList<>();
-        for (Row row : session.execute(selectParticipants.bind(tenantId, conversationId))) {
-            Participant p = toParticipant(row);
-            if (p != null && p.isActive()) {
-                result.add(p);
+        return call(() -> {
+            List<Participant> result = new ArrayList<>();
+            for (Row row : session.execute(selectParticipants.bind(tenantId, conversationId))) {
+                Participant p = toParticipant(row);
+                if (p != null && p.isActive()) {
+                    result.add(p);
+                }
             }
-        }
-        return result;
+            return result;
+        });
     }
 
     @Override
     public Optional<Participant> findParticipant(String tenantId, String conversationId, String userId) {
-        return Optional.ofNullable(toParticipant(session.execute(selectParticipant.bind(tenantId, conversationId, userId)).one()));
+        return call(() -> Optional.ofNullable(toParticipant(
+                session.execute(selectParticipant.bind(tenantId, conversationId, userId)).one())));
     }
 
     /**
@@ -623,7 +666,7 @@ public class CassandraMessageStore implements MessageStore {
      */
     @Override
     public void upsertParticipant(Participant participant) {
-        awaitAll(List.of(writeParticipant(participant, false)));
+        run(() -> awaitAll(List.of(writeParticipant(participant, false))));
     }
 
     private CompletionStage<Void> writeParticipant(Participant p, boolean fresh) {
@@ -647,66 +690,71 @@ public class CassandraMessageStore implements MessageStore {
 
     @Override
     public void removeParticipant(String tenantId, String conversationId, String userId, Instant at) {
-        session.execute(BatchStatement.newInstance(BatchType.LOGGED,
+        run(() -> session.execute(BatchStatement.newInstance(BatchType.LOGGED,
                 leaveParticipant.bind(at, at, tenantId, conversationId, userId),
-                deleteMembership.bind(tenantId, userId, conversationId)));
+                deleteMembership.bind(tenantId, userId, conversationId))));
     }
 
     @Override
     public void advanceReadState(String tenantId, String conversationId, String userId, Long deliveredSeq, Long readSeq) {
-        Long delivered = deliveredSeq == null ? readSeq : readSeq == null ? deliveredSeq : Math.max(deliveredSeq, readSeq);
-        if (delivered == null) {
-            return;
-        }
-        List<CompletionStage<?>> writes = new ArrayList<>();
-        writes.add(session.executeAsync(advanceDelivered.bind(delivered, delivered, tenantId, conversationId, userId)));
-        if (readSeq != null) {
-            writes.add(session.executeAsync(advanceRead.bind(readSeq, readSeq, tenantId, conversationId, userId)));
-        }
-        writes.add(session.executeAsync(touchParticipant.bind(Instant.now(), tenantId, conversationId, userId)));
-        awaitAll(writes);
+        run(() -> {
+            Long delivered = deliveredSeq == null ? readSeq
+                    : readSeq == null ? deliveredSeq : Math.max(deliveredSeq, readSeq);
+            if (delivered == null) {
+                return;
+            }
+            List<CompletionStage<?>> writes = new ArrayList<>();
+            writes.add(session.executeAsync(advanceDelivered.bind(delivered, delivered, tenantId, conversationId, userId)));
+            if (readSeq != null) {
+                writes.add(session.executeAsync(advanceRead.bind(readSeq, readSeq, tenantId, conversationId, userId)));
+            }
+            writes.add(session.executeAsync(touchParticipant.bind(Instant.now(), tenantId, conversationId, userId)));
+            awaitAll(writes);
+        });
     }
 
     // ------------------------------------------------------------------ messages
 
     @Override
     public AppendResult appendMessage(ChatMessage message) {
-        String tenantId = message.getTenantId();
-        String conversationId = message.getConversationId();
-        String senderId = message.getSenderId();
-        String clientMsgId = message.getClientMsgId();
-        String id = message.getId();
-        if (clientMsgId != null) {
-            Optional<ChatMessage> original = claim(
-                    () -> session.execute(claimClientMsg.bind(tenantId, conversationId, senderId, clientMsgId, id,
-                            Instant.now())),
-                    stale -> session.execute(takeoverClientMsg.bind(id, Instant.now(), tenantId, conversationId, senderId,
-                            clientMsgId, stale)).wasApplied(),
-                    "message_id", id, owner -> findMessage(tenantId, conversationId, owner));
-            if (original.isPresent()) {
-                return new AppendResult(original.get(), true);
-            }
-        }
-        long seq = allocateSeq(message);
-        if (seq < 0) {
+        return call(() -> {
+            String tenantId = message.getTenantId();
+            String conversationId = message.getConversationId();
+            String senderId = message.getSenderId();
+            String clientMsgId = message.getClientMsgId();
+            String id = message.getId();
             if (clientMsgId != null) {
-                session.execute(releaseClientMsg.bind(tenantId, conversationId, senderId, clientMsgId, id));
+                Optional<ChatMessage> original = claim(
+                        () -> session.execute(claimClientMsg.bind(tenantId, conversationId, senderId, clientMsgId, id,
+                                Instant.now())),
+                        stale -> session.execute(takeoverClientMsg.bind(id, Instant.now(), tenantId, conversationId,
+                                senderId, clientMsgId, stale)).wasApplied(),
+                        "message_id", id, owner -> findMessage(tenantId, conversationId, owner));
+                if (original.isPresent()) {
+                    return new AppendResult(original.get(), true);
+                }
             }
-            throw new IllegalArgumentException("Conversation not found: " + conversationId);
-        }
-        session.execute(BatchStatement.newInstance(BatchType.LOGGED,
-                bindUnsetNulls(insertMessage, tenantId, conversationId, seq / BUCKET_SIZE, seq, id, senderId, clientMsgId,
-                        message.getType() == null ? ChatMessage.Type.TEXT.name() : message.getType().name(),
-                        message.getContent(), Json.write(message.getAttachment()), message.getReplyToId(),
-                        message.isForwarded(), reactionsJson(message.getReactions()), message.isEdited(),
-                        message.getEditedAt(), message.isDeleted(), message.getDeletedAt(),
-                        Json.write(message.getMetadata()), message.getCreatedAt()),
-                insertMessageId.bind(tenantId, conversationId, id, seq)));
-        advanceReadState(tenantId, conversationId, senderId, seq, seq);
-        count(tenantId, "messages");
-        ChatMessage stored = Json.convert(message, ChatMessage.class);
-        stored.setSeq(seq);
-        return new AppendResult(stored, false);
+            long seq = allocateSeq(message);
+            if (seq < 0) {
+                if (clientMsgId != null) {
+                    session.execute(releaseClientMsg.bind(tenantId, conversationId, senderId, clientMsgId, id));
+                }
+                throw DomainException.notFound("Conversation");
+            }
+            session.execute(BatchStatement.newInstance(BatchType.LOGGED,
+                    bindUnsetNulls(insertMessage, tenantId, conversationId, seq / BUCKET_SIZE, seq, id, senderId,
+                            clientMsgId, message.getType() == null ? ChatMessage.Type.TEXT.name() : message.getType().name(),
+                            message.getContent(), Json.write(message.getAttachment()), message.getReplyToId(),
+                            message.isForwarded(), reactionsJson(message.getReactions()), message.isEdited(),
+                            message.getEditedAt(), message.isDeleted(), message.getDeletedAt(),
+                            Json.write(message.getMetadata()), message.getCreatedAt()),
+                    insertMessageId.bind(tenantId, conversationId, id, seq)));
+            advanceReadState(tenantId, conversationId, senderId, seq, seq);
+            count(tenantId, "messages");
+            ChatMessage stored = Json.convert(message, ChatMessage.class);
+            stored.setSeq(seq);
+            return new AppendResult(stored, false);
+        });
     }
 
     /**
@@ -751,78 +799,87 @@ public class CassandraMessageStore implements MessageStore {
                 expected = row.isNull("last_seq") ? 0 : row.getLong("last_seq");
             }
             if (attempt >= 2) {
-                sleep(ThreadLocalRandom.current().nextLong(1, Math.min(50, 2L * attempt) + 1));
+                StoreSupport.backoff(COMPONENT, ThreadLocalRandom.current().nextLong(1, Math.min(50, 2L * attempt) + 1));
             }
         }
-        throw new IllegalStateException("Could not allocate a sequence number for conversation " + conversationId
-                + " after " + MAX_SEQ_ATTEMPTS + " contended attempts");
+        log.warn("Could not allocate a sequence number for conversation {} after {} contended attempts",
+                conversationId, MAX_SEQ_ATTEMPTS);
+        throw new InfrastructureUnavailableException(COMPONENT, "too much write contention on the conversation");
     }
 
     @Override
     public Optional<ChatMessage> findMessage(String tenantId, String conversationId, String messageId) {
-        Row index = session.execute(selectMessageSeq.bind(tenantId, conversationId, messageId)).one();
-        if (index == null) {
-            return Optional.empty();
-        }
-        long seq = index.getLong("seq");
-        return Optional.ofNullable(toMessage(session.execute(
-                selectMessage.bind(tenantId, conversationId, seq / BUCKET_SIZE, seq)).one()));
+        return call(() -> {
+            Row index = session.execute(selectMessageSeq.bind(tenantId, conversationId, messageId)).one();
+            if (index == null) {
+                return Optional.empty();
+            }
+            long seq = index.getLong("seq");
+            return Optional.ofNullable(toMessage(session.execute(
+                    selectMessage.bind(tenantId, conversationId, seq / BUCKET_SIZE, seq)).one()));
+        });
     }
 
     @Override
     public List<ChatMessage> listMessages(String tenantId, String conversationId, Long afterSeq, Long beforeSeq, int limit) {
-        if (limit <= 0) {
-            return List.of();
-        }
-        Row conversation = session.execute(selectLastSeq.bind(tenantId, conversationId)).one();
-        if (conversation == null || conversation.isNull("last_seq")) {
-            return List.of();
-        }
-        long lastSeq = conversation.getLong("last_seq");
-        List<ChatMessage> result = new ArrayList<>();
-        if (afterSeq != null) {
-            for (long bucket = Math.max(0, afterSeq + 1) / BUCKET_SIZE; bucket <= lastSeq / BUCKET_SIZE
-                    && result.size() < limit; bucket++) {
-                for (Row row : session.execute(selectMessagesAfter.bind(tenantId, conversationId, bucket, afterSeq,
+        return call(() -> {
+            if (limit <= 0) {
+                return List.of();
+            }
+            Row conversation = session.execute(selectLastSeq.bind(tenantId, conversationId)).one();
+            if (conversation == null || conversation.isNull("last_seq")) {
+                return List.of();
+            }
+            long lastSeq = conversation.getLong("last_seq");
+            List<ChatMessage> result = new ArrayList<>();
+            if (afterSeq != null) {
+                for (long bucket = Math.max(0, afterSeq + 1) / BUCKET_SIZE; bucket <= lastSeq / BUCKET_SIZE
+                        && result.size() < limit; bucket++) {
+                    for (Row row : session.execute(selectMessagesAfter.bind(tenantId, conversationId, bucket, afterSeq,
+                            limit - result.size()))) {
+                        result.add(toMessage(row));
+                    }
+                }
+                return result;
+            }
+            long upper = beforeSeq == null ? lastSeq + 1 : Math.min(beforeSeq, lastSeq + 1);
+            for (long bucket = (upper - 1) / BUCKET_SIZE; upper > 1 && bucket >= 0 && result.size() < limit; bucket--) {
+                for (Row row : session.execute(selectMessagesBefore.bind(tenantId, conversationId, bucket, upper,
                         limit - result.size()))) {
                     result.add(toMessage(row));
                 }
             }
+            Collections.reverse(result);
             return result;
-        }
-        long upper = beforeSeq == null ? lastSeq + 1 : Math.min(beforeSeq, lastSeq + 1);
-        for (long bucket = (upper - 1) / BUCKET_SIZE; upper > 1 && bucket >= 0 && result.size() < limit; bucket--) {
-            for (Row row : session.execute(selectMessagesBefore.bind(tenantId, conversationId, bucket, upper,
-                    limit - result.size()))) {
-                result.add(toMessage(row));
-            }
-        }
-        Collections.reverse(result);
-        return result;
+        });
     }
 
     @Override
     public void updateMessage(ChatMessage message) {
-        String tenantId = message.getTenantId();
-        String conversationId = message.getConversationId();
-        Row index = session.execute(selectMessageSeq.bind(tenantId, conversationId, message.getId())).one();
-        if (index == null) {
-            return;
-        }
-        long seq = index.getLong("seq");
-        session.execute(updateMessage.bind(message.getContent(), Json.write(message.getAttachment()),
-                reactionsJson(message.getReactions()), message.isEdited(), message.getEditedAt(), message.isDeleted(),
-                message.getDeletedAt(), Json.write(message.getMetadata()), tenantId, conversationId,
-                seq / BUCKET_SIZE, seq));
+        run(() -> {
+            String tenantId = message.getTenantId();
+            String conversationId = message.getConversationId();
+            Row index = session.execute(selectMessageSeq.bind(tenantId, conversationId, message.getId())).one();
+            if (index == null) {
+                return;
+            }
+            long seq = index.getLong("seq");
+            session.execute(updateMessage.bind(message.getContent(), Json.write(message.getAttachment()),
+                    reactionsJson(message.getReactions()), message.isEdited(), message.getEditedAt(), message.isDeleted(),
+                    message.getDeletedAt(), Json.write(message.getMetadata()), tenantId, conversationId,
+                    seq / BUCKET_SIZE, seq));
+        });
     }
 
     // ------------------------------------------------------------------ admin
 
     @Override
     public StoreStats stats(String tenantId) {
-        Map<String, Long> counts = counters(tenantId == null ? GLOBAL_SCOPE : tenantScope(tenantId));
-        return new StoreStats(counts.getOrDefault("users", 0L), counts.getOrDefault("conversations", 0L),
-                counts.getOrDefault("messages", 0L));
+        return call(() -> {
+            Map<String, Long> counts = counters(tenantId == null ? GLOBAL_SCOPE : tenantScope(tenantId));
+            return new StoreStats(counts.getOrDefault("users", 0L), counts.getOrDefault("conversations", 0L),
+                    counts.getOrDefault("messages", 0L));
+        });
     }
 
     private static String tenantScope(String tenantId) {
@@ -883,7 +940,7 @@ public class CassandraMessageStore implements MessageStore {
                 }
                 continue;
             }
-            sleep(Math.min(200, 5L << Math.min(attempt, 5)));
+            StoreSupport.backoff(COMPONENT, Math.min(200, 5L << Math.min(attempt, 5)));
         }
     }
 
@@ -896,13 +953,6 @@ public class CassandraMessageStore implements MessageStore {
             }
         }
         return bound;
-    }
-
-    private static Object[] concat(Object[] head, Object... tail) {
-        Object[] all = new Object[head.length + tail.length];
-        System.arraycopy(head, 0, all, 0, head.length);
-        System.arraycopy(tail, 0, all, head.length, tail.length);
-        return all;
     }
 
     private <K, V> List<V> parallel(List<K> keys, Function<K, CompletionStage<V>> call) {
@@ -932,15 +982,6 @@ public class CassandraMessageStore implements MessageStore {
                 throw cause;
             }
             throw e;
-        }
-    }
-
-    private static void sleep(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while waiting for a concurrent write", e);
         }
     }
 

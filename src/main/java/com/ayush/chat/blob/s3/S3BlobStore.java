@@ -1,7 +1,9 @@
 package com.ayush.chat.blob.s3;
 
 import com.ayush.chat.blob.BlobStore;
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
@@ -28,12 +30,16 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * Amazon S3 and S3-compatible object storage (MinIO, R2, Spaces, B2, GCS interop, Wasabi).
- * Downloads can bypass the chat nodes through presigned GET URLs.
+ * Downloads can bypass the chat nodes through presigned GET URLs. S3 failures at runtime (and use
+ * after {@link #close()}) surface as {@link InfrastructureUnavailableException} (503).
  */
 public class S3BlobStore implements BlobStore {
+
+    private static final String COMPONENT = ConnectorKind.BLOB_STORE.getDisplayName();
 
     /** SigV4 presigned URLs are valid for at most 7 days. */
     static final Duration MAX_PRESIGN_TTL = Duration.ofDays(7);
@@ -124,32 +130,37 @@ public class S3BlobStore implements BlobStore {
                 throw new UncheckedIOException("Failed to read upload for " + key, e);
             }
         }
-        s3.putObject(request, body);
+        call(() -> s3.putObject(request, body));
     }
 
     @Override
     public Optional<BlobObject> get(String key) {
-        try {
-            ResponseInputStream<GetObjectResponse> in = s3.getObject(b -> b.bucket(bucket).key(objectKey(key)));
-            GetObjectResponse response = in.response();
-            long size = response.contentLength() == null ? -1 : response.contentLength();
-            String contentType = response.contentType() == null ? DEFAULT_CONTENT_TYPE : response.contentType();
-            return Optional.of(new BlobObject(in, size, contentType));
-        } catch (NoSuchKeyException e) {
-            return Optional.empty();
-        } catch (S3Exception e) {
-            if (e.statusCode() == 404) { // some S3-compatibles omit the NoSuchKey error code
+        String objectKey = objectKey(key);
+        return call(() -> {
+            try {
+                ResponseInputStream<GetObjectResponse> in = s3.getObject(b -> b.bucket(bucket).key(objectKey));
+                GetObjectResponse response = in.response();
+                long size = response.contentLength() == null ? -1 : response.contentLength();
+                String contentType = response.contentType() == null ? DEFAULT_CONTENT_TYPE : response.contentType();
+                return Optional.of(new BlobObject(in, size, contentType));
+            } catch (NoSuchKeyException e) {
                 return Optional.empty();
+            } catch (S3Exception e) {
+                if (e.statusCode() == 404) { // some S3-compatibles omit the NoSuchKey error code
+                    return Optional.empty();
+                }
+                throw e;
             }
-            throw e;
-        }
+        });
     }
 
     @Override
     public void delete(String key) {
-        s3.deleteObject(b -> b.bucket(bucket).key(objectKey(key)));
+        String objectKey = objectKey(key);
+        call(() -> s3.deleteObject(b -> b.bucket(bucket).key(objectKey)));
     }
 
+    /** Signed locally (no request to S3); fails only when credentials cannot be resolved. */
     @Override
     public Optional<String> presignedUrl(String key, Duration ttl) {
         Duration duration = ttl == null || ttl.isZero() || ttl.isNegative() ? presignTtl : ttl;
@@ -158,8 +169,20 @@ public class S3BlobStore implements BlobStore {
         }
         Duration signatureDuration = duration;
         String objectKey = objectKey(key);
-        return Optional.of(presigner.presignGetObject(r -> r.signatureDuration(signatureDuration)
-                .getObjectRequest(g -> g.bucket(bucket).key(objectKey))).url().toString());
+        return Optional.of(call(() -> presigner.presignGetObject(r -> r.signatureDuration(signatureDuration)
+                .getObjectRequest(g -> g.bucket(bucket).key(objectKey))).url().toString()));
+    }
+
+    /** Runs one S3 operation: SDK failures (and use after close) become a retryable 503. */
+    private <T> T call(Supplier<T> operation) {
+        if (closed.get()) {
+            throw new InfrastructureUnavailableException(COMPONENT, "closed");
+        }
+        try {
+            return operation.get();
+        } catch (SdkException e) {
+            throw new InfrastructureUnavailableException(COMPONENT, e);
+        }
     }
 
     @Override

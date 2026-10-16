@@ -1,12 +1,13 @@
 package com.ayush.chat.push.webhook;
 
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.crypto.WebhookSignature;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.push.PushSender;
 import lombok.extern.slf4j.Slf4j;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -14,11 +15,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.security.GeneralSecurityException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -32,9 +31,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * Hands each notification to the tenant's own push service (APNs, OneSignal, ...) as an HTTP POST.
  *
  * <p>Body: JSON {@code {event, timestamp, tenantId, userId, deviceTokens, title, body, data}}.
- * Headers: {@code X-Chat-Timestamp} (epoch seconds, equal to {@code timestamp} in the body) and,
- * when a secret is configured, {@code X-Chat-Signature: sha256=<hex HMAC-SHA256 of the raw body>}.
- * Because the timestamp is inside the signed body, receivers can reject stale replays.
+ * Headers follow the platform's single callback signature scheme ({@link WebhookSignature}, the
+ * same as tenant webhooks): {@code X-Chat-Timestamp} (epoch seconds, equal to {@code timestamp} in
+ * the body) and, when a secret is configured,
+ * {@code X-Chat-Signature: sha256=<hex HMAC-SHA256(secret, timestamp + "." + body)>}, so receivers
+ * can reject stale replays.
  *
  * <p>Any 2xx response counts as delivered. A 2xx JSON response may report
  * {@code {"invalidTokens": [...], "delivered": n, "failed": n}}; reported tokens are passed back so
@@ -43,8 +44,7 @@ import java.util.concurrent.atomic.AtomicLong;
 @Slf4j
 public class WebhookPushSender implements PushSender {
 
-    public static final String SIGNATURE_HEADER = "X-Chat-Signature";
-    public static final String TIMESTAMP_HEADER = "X-Chat-Timestamp";
+    private static final String COMPONENT = ConnectorKind.PUSH.getDisplayName();
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
 
     record WebhookPayload(String event, long timestamp, String tenantId, String userId, Collection<String> deviceTokens,
@@ -52,7 +52,7 @@ public class WebhookPushSender implements PushSender {
     }
 
     private final URI url;
-    private final byte[] secret;
+    private final String secret;
     private final Duration timeout;
     private final HttpClient http;
     private final AtomicLong delivered = new AtomicLong();
@@ -61,7 +61,7 @@ public class WebhookPushSender implements PushSender {
 
     public WebhookPushSender(String url, String secret, Duration timeout) {
         this.url = parseUrl(url);
-        this.secret = secret == null || secret.isBlank() ? null : secret.getBytes(StandardCharsets.UTF_8);
+        this.secret = secret == null || secret.isBlank() ? null : secret;
         if (timeout == null || timeout.isZero() || timeout.isNegative()) {
             throw new IllegalArgumentException("Timeout must be positive");
         }
@@ -101,7 +101,7 @@ public class WebhookPushSender implements PushSender {
     @Override
     public PushResult send(PushNotification notification) {
         if (closed.get()) {
-            throw new IllegalStateException("Push sender closed");
+            throw new InfrastructureUnavailableException(COMPONENT, "closed");
         }
         Set<String> tokens = new TreeSet<>();
         if (notification.deviceTokens() != null) {
@@ -110,16 +110,16 @@ public class WebhookPushSender implements PushSender {
         // Without device tokens the receiver may still resolve devices from userId: count the notification once.
         int targets = Math.max(1, tokens.size());
         long timestamp = Instant.now().getEpochSecond();
-        byte[] body = Json.write(new WebhookPayload("push", timestamp, notification.tenantId(), notification.userId(),
-                tokens, notification.title(), notification.body(), notification.data())).getBytes(StandardCharsets.UTF_8);
+        String body = Json.write(new WebhookPayload("push", timestamp, notification.tenantId(), notification.userId(),
+                tokens, notification.title(), notification.body(), notification.data()));
 
         HttpRequest.Builder request = HttpRequest.newBuilder(url)
                 .timeout(timeout)
                 .header("Content-Type", "application/json")
-                .header(TIMESTAMP_HEADER, String.valueOf(timestamp))
-                .POST(HttpRequest.BodyPublishers.ofByteArray(body));
+                .header(WebhookSignature.TIMESTAMP_HEADER, String.valueOf(timestamp))
+                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
         if (secret != null) {
-            request.header(SIGNATURE_HEADER, sign(secret, body));
+            request.header(WebhookSignature.SIGNATURE_HEADER, WebhookSignature.sign(secret, timestamp, body));
         }
         try {
             HttpResponse<InputStream> response = http.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
@@ -153,17 +153,6 @@ public class WebhookPushSender implements PushSender {
                 Thread.currentThread().interrupt();
                 http.shutdownNow();
             }
-        }
-    }
-
-    /** {@code sha256=<hex HMAC-SHA256(secret, body)>}. */
-    public static String sign(byte[] secret, byte[] body) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(secret, "HmacSHA256"));
-            return "sha256=" + HexFormat.of().formatHex(mac.doFinal(body));
-        } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("HmacSHA256 unavailable", e);
         }
     }
 
