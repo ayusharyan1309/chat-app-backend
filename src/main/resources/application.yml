@@ -66,6 +66,8 @@ platform:
     master-key: ${PLATFORM_MASTER_KEY:}
     # Signs admin and user JWTs (derived from the master key when blank).
     jwt-secret: ${PLATFORM_JWT_SECRET:}
+    # Let tenants register webhooks/JWKS on private networks (development only).
+    allow-private-network-callbacks: ${PLATFORM_SECURITY_ALLOW_PRIVATE_NETWORK_CALLBACKS:false}
     admin-token-ttl: 12h
     user-token-ttl: 24h
     bootstrap-admin:

@@ -22,7 +22,7 @@ import java.util.Base64;
 public class SecretCipher {
 
     private static final String PREFIX = "enc:v1:";
-    private static final String DEV_KEY = "dev-only-master-key-change-me";
+    private static final String DEV_KEY = com.ayush.chat.core.config.PlatformProperties.Security.DEV_MASTER_KEY;
     private static final int IV_BYTES = 12;
     private static final int TAG_BITS = 128;
 

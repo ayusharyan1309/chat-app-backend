@@ -52,9 +52,8 @@ public class MediaService {
         this.tenants = tenants;
         this.usage = usage;
         this.properties = properties;
-        String master = properties.getSecurity().getMasterKey() == null ? "dev-only-master-key-change-me"
-                : properties.getSecurity().getMasterKey();
-        byte[] key = MessageDigest.getInstance("SHA-256").digest(("media:" + master).getBytes(StandardCharsets.UTF_8));
+        byte[] key = MessageDigest.getInstance("SHA-256")
+                .digest(("media:" + properties.getSecurity().effectiveMasterKey()).getBytes(StandardCharsets.UTF_8));
         this.signingKey = new SecretKeySpec(key, "HmacSHA256");
     }
 

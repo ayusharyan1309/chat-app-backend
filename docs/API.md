@@ -7,6 +7,9 @@ Interactive docs: `/swagger-ui.html` (OpenAPI at `/v3/api-docs`).
 ```json
 { "status": 400, "error": "bad_request", "message": "Human readable", "path": "/api/...", "timestamp": "..." }
 ```
+Tenant-supplied callback URLs (webhooks, push webhook, JWKS) must resolve to public addresses unless the
+operator sets `PLATFORM_SECURITY_ALLOW_PRIVATE_NETWORK_CALLBACKS=true`.
+
 Error codes: `bad_request`, `validation_failed`, `unauthorized`, `forbidden`, `not_found`, `conflict`,
 `feature_disabled`, `quota_exceeded`, `rate_limited`, `unavailable`, `internal_error`.
 
@@ -232,7 +235,7 @@ Events: `message.created`, `message.updated`, `message.deleted`, `conversation.c
 | POST | `/api/v1/conversations/{id}/delivered` | `{seq}` → 204 |
 | POST | `/api/v1/conversations/{id}/typing` | `{typing: true}` → 204 |
 | POST | `/api/v1/media` | multipart `file` → `{mediaId, url, mimeType, size, fileName}` (`media-sharing` for image/video/audio, `file-sharing` otherwise) |
-| GET | `/api/v1/media/{tenant}/{mediaId}?exp=&sig=` | → file bytes (signed URL; no auth header needed so it works in `<img src>`) |
+| GET | `/api/v1/media/{tenant}/{mediaId}?sig=` | → file bytes, or a 302 to a presigned S3 URL. Capability URL: unguessable id + HMAC signature, no auth header needed so it works in `<img src>` |
 
 ```json
 Conversation = { "id", "type": "DIRECT|GROUP", "title", "description", "avatarUrl", "createdBy", "createdAt",
@@ -268,13 +271,13 @@ Server → client: subscribe to `/user/queue/events`. Every frame is an envelope
 ```
 | type | data |
 |---|---|
-| `message.new` | `Message` (sent to every participant except the sender's sending session) |
+| `message.new` | `Message` — sent to every session of every participant, including the sender's (keeps other devices in sync; de-duplicate by `id`, reconcile optimistic bubbles by `clientMsgId`) |
 | `message.ack` | `{clientMsgId, message: Message, duplicate}` (to the sender: the message is durably stored) |
 | `message.updated` | `Message` (edit, delete, reaction) |
 | `receipt` | `{userId, deliveredSeq, readSeq}` |
 | `typing` | `{userId, typing}` |
 | `presence` | `{userId, online, lastSeenAt}` |
-| `conversation.updated` | `Conversation` (created, renamed, membership changed — from the recipient's point of view) |
+| `conversation.updated` | `Conversation` without `participants` (created, renamed, membership or settings changed — from the recipient's point of view; sent to every participant including the actor) |
 | `conversation.removed` | `{conversationId}` (you were removed / left) |
 | `error` | `{code, message, clientMsgId?}` |
 

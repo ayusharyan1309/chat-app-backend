@@ -39,8 +39,7 @@ public class JwtService {
         this.properties = properties;
         String secret = properties.getSecurity().getJwtSecret();
         String material = secret != null && !secret.isBlank() ? secret
-                : "jwt:" + (properties.getSecurity().getMasterKey() == null ? "dev-only-master-key-change-me"
-                : properties.getSecurity().getMasterKey());
+                : "jwt:" + properties.getSecurity().effectiveMasterKey();
         if (secret == null || secret.isBlank()) {
             log.warn("platform.security.jwt-secret is not set — deriving it from the master key. Set PLATFORM_JWT_SECRET in production.");
         }

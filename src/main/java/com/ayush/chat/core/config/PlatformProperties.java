@@ -40,11 +40,20 @@ public class PlatformProperties {
 
     @Data
     public static class Security {
+        public static final String DEV_MASTER_KEY = "dev-only-master-key-change-me";
+
         private String masterKey;
         private String jwtSecret;
         private Duration adminTokenTtl = Duration.ofHours(12);
         private Duration userTokenTtl = Duration.ofHours(24);
         private BootstrapAdmin bootstrapAdmin = new BootstrapAdmin();
+        /** Allow tenant callback URLs (webhooks, JWKS) that resolve to private networks. */
+        private boolean allowPrivateNetworkCallbacks;
+
+        /** The configured master key, or the development key when unset or blank. */
+        public String effectiveMasterKey() {
+            return masterKey == null || masterKey.isBlank() ? DEV_MASTER_KEY : masterKey;
+        }
     }
 
     @Data

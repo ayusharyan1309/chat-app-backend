@@ -1,0 +1,168 @@
+# Kubernetes deployment of the chat platform. Nodes are stateless; they need a shared control
+# plane DB, message store, Redis/Kafka (cache + bus) and S3-compatible media storage.
+#
+#   kubectl apply -f deploy/k8s/platform.yaml
+#   kubectl -n chat-platform create secret generic chat-platform-secrets --from-env-file=.env.prod
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chat-platform
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chat-platform-config
+  namespace: chat-platform
+data:
+  PUBLIC_URL: "https://chat.example.com"
+  CORS_ALLOWED_ORIGINS: "https://chat.example.com"
+  MESSAGE_STORE_PROVIDER: "postgresql"
+  CACHE_PROVIDER: "redis"
+  EVENT_BUS_PROVIDER: "kafka"
+  BLOB_STORE_PROVIDER: "s3"
+  S3_REGION: "us-east-1"
+  JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+---
+# Template only — create the real secret from a file, never commit credentials.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: chat-platform-secrets
+  namespace: chat-platform
+type: Opaque
+stringData:
+  PLATFORM_MASTER_KEY: "replace-with-48-random-characters"
+  PLATFORM_JWT_SECRET: "replace-with-48-random-characters"
+  CONTROL_DB_URL: "jdbc:postgresql://postgres.internal:5432/chat_control"
+  CONTROL_DB_USERNAME: "chat"
+  CONTROL_DB_PASSWORD: "replace-me"
+  MESSAGE_STORE_URL: "jdbc:postgresql://postgres.internal:5432/chat_messages"
+  MESSAGE_STORE_USERNAME: "chat"
+  MESSAGE_STORE_PASSWORD: "replace-me"
+  REDIS_URL: "rediss://:replace-me@redis.internal:6379"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-0.kafka.internal:9092,kafka-1.kafka.internal:9092"
+  S3_BUCKET: "chat-media"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-platform
+  namespace: chat-platform
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: chat-platform }
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels: { app: chat-platform }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "8080"
+    spec:
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app: chat-platform }
+      containers:
+        - name: platform
+          image: chat-platform:2.0.0
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: NODE_ID
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          envFrom:
+            - configMapRef: { name: chat-platform-config }
+            - secretRef: { name: chat-platform-secrets }
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits: { memory: "2Gi" }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
+          lifecycle:
+            preStop:
+              exec: { command: ["sh", "-c", "sleep 10"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /app/data }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-platform
+  namespace: chat-platform
+spec:
+  selector: { app: chat-platform }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat-platform
+  namespace: chat-platform
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: chat.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: chat-platform
+                port: { name: http }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chat-platform
+  namespace: chat-platform
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: chat-platform }
+  minReplicas: 3
+  maxReplicas: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 65 }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: chat-platform
+  namespace: chat-platform
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: chat-platform }

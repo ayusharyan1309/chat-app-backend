@@ -1,0 +1,151 @@
+# -------------------------------------------------------------------------------------
+# Chat Platform — local / single-host deployment.
+#
+#   docker compose up                                   # zero dependencies: H2 + in-memory
+#   docker compose --profile postgres --profile redis up   # + set the matching vars in .env
+#   docker compose --profile cluster --profile postgres --profile redis up
+#                                                        # two nodes behind nginx on :8088
+#
+# Every backing service is optional and lives behind a profile. Point the platform at it via
+# .env (see .env.example) or switch providers live from the dashboard's Infrastructure page.
+# -------------------------------------------------------------------------------------
+
+x-platform: &platform
+  build: .
+  image: chat-platform:2.0.0
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+    PLATFORM_MASTER_KEY: ${PLATFORM_MASTER_KEY:-change-me-to-32-plus-random-characters}
+    PLATFORM_JWT_SECRET: ${PLATFORM_JWT_SECRET:-change-me-to-another-32-plus-random-characters}
+    CONTROL_DB_URL: ${CONTROL_DB_URL:-jdbc:h2:file:/app/data/control-plane}
+    MESSAGE_STORE_URL: ${MESSAGE_STORE_URL:-jdbc:h2:file:/app/data/chat-store}
+    MEDIA_DIRECTORY: ${MEDIA_DIRECTORY:-/app/data/media}
+  restart: unless-stopped
+
+services:
+  platform:
+    <<: *platform
+    ports:
+      - "8080:8080"
+    volumes:
+      - platform-data:/app/data
+
+  # ---- Horizontal scale demo: two stateless nodes + nginx (needs shared DB, cache and bus) --
+  node-a:
+    <<: *platform
+    profiles: [cluster]
+    environment:
+      NODE_ID: node-a
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8088}
+      PLATFORM_MASTER_KEY: ${PLATFORM_MASTER_KEY:-change-me-to-32-plus-random-characters}
+      PLATFORM_JWT_SECRET: ${PLATFORM_JWT_SECRET:-change-me-to-another-32-plus-random-characters}
+      MEDIA_DIRECTORY: /app/media
+    volumes:
+      - shared-media:/app/media
+  node-b:
+    <<: *platform
+    profiles: [cluster]
+    environment:
+      NODE_ID: node-b
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8088}
+      PLATFORM_MASTER_KEY: ${PLATFORM_MASTER_KEY:-change-me-to-32-plus-random-characters}
+      PLATFORM_JWT_SECRET: ${PLATFORM_JWT_SECRET:-change-me-to-another-32-plus-random-characters}
+      MEDIA_DIRECTORY: /app/media
+    volumes:
+      - shared-media:/app/media
+  gateway:
+    image: nginx:1.27-alpine
+    profiles: [cluster]
+    ports:
+      - "8088:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on: [node-a, node-b]
+
+  # ---- Optional backing services --------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    profiles: [postgres]
+    environment:
+      POSTGRES_USER: chat
+      POSTGRES_PASSWORD: chat
+      POSTGRES_DB: chat
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat"]
+      interval: 5s
+      retries: 20
+
+  mysql:
+    image: mysql:8.4
+    profiles: [mysql]
+    environment:
+      MYSQL_ROOT_PASSWORD: chat
+      MYSQL_DATABASE: chat
+      MYSQL_USER: chat
+      MYSQL_PASSWORD: chat
+    ports: ["3306:3306"]
+    volumes: [mysql-data:/var/lib/mysql]
+
+  mongo:
+    image: mongo:7
+    profiles: [mongo]
+    ports: ["27017:27017"]
+    volumes: [mongo-data:/data/db]
+
+  cassandra:
+    image: scylladb/scylla:6.2
+    profiles: [cassandra]
+    command: --smp 1 --memory 1G --overprovisioned 1
+    ports: ["9042:9042"]
+    volumes: [cassandra-data:/var/lib/scylla]
+
+  redis:
+    image: redis:7-alpine
+    profiles: [redis]
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: [redis-data:/data]
+
+  kafka:
+    image: apache/kafka:3.9.1
+    profiles: [kafka]
+    ports: ["9092:9092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,INTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    profiles: [minio]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: chat
+      MINIO_ROOT_PASSWORD: chat-secret-key
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [minio-data:/data]
+
+volumes:
+  platform-data:
+  shared-media:
+  postgres-data:
+  mysql-data:
+  mongo-data:
+  cassandra-data:
+  redis-data:
+  minio-data:
