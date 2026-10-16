@@ -49,6 +49,7 @@ import static org.awaitility.Awaitility.await;
         "platform.connectors.message-store.settings.url=jdbc:h2:mem:store-it;DB_CLOSE_DELAY=-1",
         "platform.connectors.blob-store.settings.directory=target/it-media",
         "platform.security.master-key=integration-test-master-key-0123456789",
+        "platform.security.allow-private-network-callbacks=true",
         "platform.public-url=http://localhost:0"
 })
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)

@@ -170,6 +170,13 @@ public abstract class CacheStoreConformanceTest {
     }
 
     @Test
+    void deleteIfEqualsTreatsExpiredKeyAsAbsent() throws Exception {
+        cache.set(key("ttl-lock"), "me", Duration.ofMillis(150));
+        Thread.sleep(400);
+        assertThat(cache.deleteIfEquals(key("ttl-lock"), "me")).isFalse();
+    }
+
+    @Test
     void deleteIfEqualsOnMissingKeyIsFalse() {
         assertThat(cache.deleteIfEquals(key("absent"), "x")).isFalse();
     }

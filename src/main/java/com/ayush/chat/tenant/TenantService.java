@@ -4,6 +4,7 @@ import com.ayush.chat.core.config.ConnectorConfigChangedEvent;
 import com.ayush.chat.core.config.ConnectorConfigService;
 import com.ayush.chat.core.crypto.SecretCipher;
 import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.net.OutboundUrlPolicy;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.tenant.TenantRepositories.PlanRepository;
 import com.ayush.chat.tenant.TenantRepositories.TenantRepository;
@@ -39,6 +40,7 @@ public class TenantService {
     private final SecretCipher cipher;
     private final ConnectorConfigService connectorConfigs;
     private final ApplicationEventPublisher events;
+    private final OutboundUrlPolicy urlPolicy;
 
     public record TenantInput(String name, String slug, String contactEmail, String domain, String planCode, Integer trialDays) {
     }
@@ -217,6 +219,9 @@ public class TenantService {
             secret = cipher.encrypt(secret);
         } else {
             secret = null;
+        }
+        if (!blank(in.jwksUrl())) {
+            urlPolicy.check(in.jwksUrl());
         }
         if (type.equals("jwt") && secret == null && blank(in.jwksUrl())) {
             throw ApiException.badRequest("JWT auth needs either jwksUrl (RS256/ES256) or jwtSecret (HS256)");

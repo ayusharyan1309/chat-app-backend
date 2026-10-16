@@ -95,7 +95,11 @@ public class InMemoryCacheStore implements CacheStore {
     @Override
     public boolean deleteIfEquals(String key, String expected) {
         boolean[] deleted = {false};
+        long now = System.currentTimeMillis();
         entries.computeIfPresent(key, (k, existing) -> {
+            if (existing.expired(now)) {
+                return null;
+            }
             if (existing.value().equals(expected)) {
                 deleted[0] = true;
                 return null;

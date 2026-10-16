@@ -1,5 +1,7 @@
 package com.ayush.chat.push.webhook;
 
+import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.net.OutboundUrlPolicy;
 import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorConfig;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
@@ -39,7 +41,7 @@ class WebhookPushSenderTest {
     private record Captured(String method, String path, Headers headers, byte[] body) {
     }
 
-    private final WebhookPushFactory factory = new WebhookPushFactory();
+    private final WebhookPushFactory factory = new WebhookPushFactory(new OutboundUrlPolicy(true));
     private final BlockingQueue<Captured> requests = new LinkedBlockingQueue<>();
     private HttpServer server;
     private volatile int status = 200;
@@ -221,9 +223,9 @@ class WebhookPushSenderTest {
 
     @Test
     void invalidSettingsFailFast() {
-        assertThatThrownBy(() -> create(Map.of("url", "ftp://example.com/hook"))).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> create(Map.of("url", "not a url"))).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> create(Map.of("url", "/relative/path"))).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> create(Map.of("url", "ftp://example.com/hook"))).isInstanceOfAny(IllegalArgumentException.class, ApiException.class);
+        assertThatThrownBy(() -> create(Map.of("url", "not a url"))).isInstanceOfAny(IllegalArgumentException.class, ApiException.class);
+        assertThatThrownBy(() -> create(Map.of("url", "/relative/path"))).isInstanceOfAny(IllegalArgumentException.class, ApiException.class);
         assertThatThrownBy(() -> create(Map.of("url", url(), "timeoutMs", 0))).isInstanceOf(IllegalArgumentException.class);
 
         ConnectorRegistry registry = new ConnectorRegistry(List.of(factory));

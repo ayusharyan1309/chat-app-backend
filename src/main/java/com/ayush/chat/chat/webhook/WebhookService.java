@@ -5,6 +5,7 @@ import com.ayush.chat.chat.event.DomainEvent;
 import com.ayush.chat.core.config.ConnectorConfigService;
 import com.ayush.chat.core.crypto.SecretCipher;
 import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.net.OutboundUrlPolicy;
 import com.ayush.chat.core.util.Ids;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.tenant.Feature;
@@ -59,6 +60,7 @@ public class WebhookService {
     private final SecretCipher cipher;
     private final TenantDirectory tenants;
     private final RealtimeGateway gateway;
+    private final OutboundUrlPolicy urlPolicy;
 
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(4, r -> {
@@ -160,14 +162,10 @@ public class WebhookService {
     }
 
     private void apply(Webhook webhook, WebhookInput input) {
-        if (input.url() == null || !(input.url().startsWith("https://") || input.url().startsWith("http://"))) {
-            throw ApiException.badRequest("url must be an http(s) URL");
+        if (input.url() == null || input.url().isBlank()) {
+            throw ApiException.badRequest("url is required");
         }
-        try {
-            URI.create(input.url()).toURL();
-        } catch (Exception e) {
-            throw ApiException.badRequest("url is not valid");
-        }
+        urlPolicy.check(input.url());
         Set<String> events = new LinkedHashSet<>(input.events() == null ? List.of() : input.events());
         if (events.isEmpty()) {
             throw ApiException.badRequest("Select at least one event");
@@ -236,7 +234,9 @@ public class WebhookService {
         delivery.setAttempts(delivery.getAttempts() + 1);
         delivery.setLastAttemptAt(Instant.now());
         try {
-            HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(target.url()))
+            // Re-checked at send time: DNS may have changed since the webhook was saved.
+            URI uri = urlPolicy.check(target.url());
+            HttpResponse<String> response = http.send(HttpRequest.newBuilder(uri)
                     .timeout(Duration.ofSeconds(10))
                     .header("Content-Type", "application/json")
                     .header("User-Agent", "chat-platform-webhooks/2")
