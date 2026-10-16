@@ -1,13 +1,20 @@
 package com.ayush.chat.store.sql;
 
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.error.ErrorCode;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.store.MessagePreview;
 import com.ayush.chat.store.MessageStore;
+import com.ayush.chat.store.StoreSupport;
+import com.ayush.chat.store.UserSearch;
 import com.ayush.chat.store.model.AppendResult;
 import com.ayush.chat.store.model.ChatMessage;
 import com.ayush.chat.store.model.ChatUser;
 import com.ayush.chat.store.model.Conversation;
+import com.ayush.chat.store.model.FieldLimits;
 import com.ayush.chat.store.model.InboxItem;
 import com.ayush.chat.store.model.Participant;
 import com.ayush.chat.store.model.StoreStats;
@@ -31,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
@@ -40,12 +48,18 @@ import java.util.regex.Pattern;
  * inside the append transaction, so concurrent senders in one conversation are serialised while
  * different conversations proceed in parallel. Idempotency is backed by a unique index on
  * (tenant, conversation, sender, client_msg_id).
+ *
+ * <p>Database failures surface as {@link InfrastructureUnavailableException} (503). Unique-key
+ * violations are expected outcomes of races and are resolved inside the store.
  */
 @Slf4j
 public class SqlMessageStore implements MessageStore {
 
+    private static final String COMPONENT = ConnectorKind.MESSAGE_STORE.getDisplayName();
     private static final Pattern SAFE_PREFIX = Pattern.compile("[A-Za-z0-9_]{0,32}");
     private static final int MAX_RETRIES = 5;
+    /** Width of columns holding enum names (conversation and message type, participant role). */
+    private static final int ENUM_NAME = 16;
     private static final TypeReference<Set<String>> STRING_SET = new TypeReference<>() {
     };
     private static final TypeReference<Map<String, Set<String>>> REACTIONS = new TypeReference<>() {
@@ -61,19 +75,21 @@ public class SqlMessageStore implements MessageStore {
     private final String messages;
     private final String prefix;
 
+    /** @param tablePrefix prepended to every table and constraint name; null for none */
     public SqlMessageStore(String providerId, HikariDataSource dataSource, String tablePrefix) {
-        if (!SAFE_PREFIX.matcher(tablePrefix).matches()) {
+        String p = tablePrefix == null ? "" : tablePrefix;
+        if (!SAFE_PREFIX.matcher(p).matches()) {
             throw new IllegalArgumentException("Table prefix may only contain letters, digits and underscores");
         }
         this.providerId = providerId;
         this.dataSource = dataSource;
         this.dialect = SqlDialect.fromJdbcUrl(dataSource.getJdbcUrl());
-        this.prefix = tablePrefix;
-        this.users = tablePrefix + "users";
-        this.blocks = tablePrefix + "blocks";
-        this.conversations = tablePrefix + "conversations";
-        this.participants = tablePrefix + "participants";
-        this.messages = tablePrefix + "messages";
+        this.prefix = p;
+        this.users = p + "users";
+        this.blocks = p + "blocks";
+        this.conversations = p + "conversations";
+        this.participants = p + "participants";
+        this.messages = p + "messages";
         initializeSchema();
     }
 
@@ -114,34 +130,43 @@ public class SqlMessageStore implements MessageStore {
 
     private void initializeSchema() {
         String text = dialect.textType();
+        String tenantId = "tenant_id " + varchar(FieldLimits.TENANT_ID) + " NOT NULL";
+        String userId = varchar(FieldLimits.USER_ID);
+        String entityId = varchar(FieldLimits.ENTITY_ID);
+        String enumName = varchar(ENUM_NAME);
         List<String> ddl = List.of(
                 "CREATE TABLE IF NOT EXISTS " + users + " ("
-                        + "tenant_id VARCHAR(64) NOT NULL, id VARCHAR(128) NOT NULL, display_name VARCHAR(255),"
-                        + " email VARCHAR(255), phone VARCHAR(64), avatar_url VARCHAR(1024), about VARCHAR(1024),"
+                        + tenantId + ", id " + userId + " NOT NULL, display_name " + varchar(FieldLimits.DISPLAY_NAME) + ","
+                        + " email " + varchar(FieldLimits.EMAIL) + ", phone " + varchar(FieldLimits.PHONE) + ","
+                        + " avatar_url " + varchar(FieldLimits.URL) + ", about " + varchar(FieldLimits.ABOUT) + ","
                         + " push_tokens " + text + ", metadata " + text + ", deactivated BOOLEAN NOT NULL,"
                         + " created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, last_seen_at BIGINT,"
                         + " PRIMARY KEY (tenant_id, id))",
                 "CREATE TABLE IF NOT EXISTS " + blocks + " ("
-                        + "tenant_id VARCHAR(64) NOT NULL, blocker_id VARCHAR(128) NOT NULL, blocked_id VARCHAR(128) NOT NULL,"
+                        + tenantId + ", blocker_id " + userId + " NOT NULL, blocked_id " + userId + " NOT NULL,"
                         + " created_at BIGINT NOT NULL, PRIMARY KEY (tenant_id, blocker_id, blocked_id))",
                 "CREATE TABLE IF NOT EXISTS " + conversations + " ("
-                        + "tenant_id VARCHAR(64) NOT NULL, id VARCHAR(64) NOT NULL, type VARCHAR(16) NOT NULL,"
-                        + " direct_key VARCHAR(300), title VARCHAR(255), description VARCHAR(1024), avatar_url VARCHAR(1024),"
-                        + " created_by VARCHAR(128), last_seq BIGINT NOT NULL, last_message_id VARCHAR(64),"
-                        + " last_message_preview VARCHAR(512), last_message_sender_id VARCHAR(128), last_message_at BIGINT,"
+                        + tenantId + ", id " + entityId + " NOT NULL, type " + enumName + " NOT NULL,"
+                        + " direct_key " + varchar(FieldLimits.DIRECT_KEY) + ", title " + varchar(FieldLimits.TITLE) + ","
+                        + " description " + varchar(FieldLimits.DESCRIPTION) + ", avatar_url " + varchar(FieldLimits.URL) + ","
+                        + " created_by " + userId + ", last_seq BIGINT NOT NULL, last_message_id " + entityId + ","
+                        + " last_message_preview " + varchar(FieldLimits.PREVIEW) + ", last_message_sender_id " + userId + ","
+                        + " last_message_at BIGINT,"
                         + " activity_at BIGINT NOT NULL, metadata " + text + ", created_at BIGINT NOT NULL,"
                         + " updated_at BIGINT NOT NULL, PRIMARY KEY (tenant_id, id),"
                         + " CONSTRAINT " + prefix + "uq_conv_direct UNIQUE (tenant_id, direct_key))",
                 "CREATE TABLE IF NOT EXISTS " + participants + " ("
-                        + "tenant_id VARCHAR(64) NOT NULL, conversation_id VARCHAR(64) NOT NULL, user_id VARCHAR(128) NOT NULL,"
-                        + " role VARCHAR(16) NOT NULL, joined_seq BIGINT NOT NULL, delivered_seq BIGINT NOT NULL,"
+                        + tenantId + ", conversation_id " + entityId + " NOT NULL, user_id " + userId + " NOT NULL,"
+                        + " role " + enumName + " NOT NULL, joined_seq BIGINT NOT NULL, delivered_seq BIGINT NOT NULL,"
                         + " read_seq BIGINT NOT NULL, muted BOOLEAN NOT NULL, archived BOOLEAN NOT NULL, pinned BOOLEAN NOT NULL,"
                         + " joined_at BIGINT, left_at BIGINT, updated_at BIGINT,"
                         + " PRIMARY KEY (tenant_id, conversation_id, user_id))",
                 "CREATE TABLE IF NOT EXISTS " + messages + " ("
-                        + "tenant_id VARCHAR(64) NOT NULL, conversation_id VARCHAR(64) NOT NULL, seq BIGINT NOT NULL,"
-                        + " id VARCHAR(64) NOT NULL, sender_id VARCHAR(128) NOT NULL, client_msg_id VARCHAR(128),"
-                        + " type VARCHAR(16) NOT NULL, content " + text + ", attachment " + text + ", reply_to_id VARCHAR(64),"
+                        + tenantId + ", conversation_id " + entityId + " NOT NULL, seq BIGINT NOT NULL,"
+                        + " id " + entityId + " NOT NULL, sender_id " + userId + " NOT NULL,"
+                        + " client_msg_id " + varchar(FieldLimits.CLIENT_MSG_ID) + ","
+                        + " type " + enumName + " NOT NULL, content " + text + ", attachment " + text + ","
+                        + " reply_to_id " + entityId + ","
                         + " forwarded BOOLEAN NOT NULL, reactions " + text + ", edited BOOLEAN NOT NULL, edited_at BIGINT,"
                         + " deleted BOOLEAN NOT NULL, deleted_at BIGINT, metadata " + text + ", created_at BIGINT NOT NULL,"
                         + " PRIMARY KEY (tenant_id, conversation_id, seq),"
@@ -158,6 +183,10 @@ public class SqlMessageStore implements MessageStore {
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to initialise schema: " + e.getMessage(), e);
         }
+    }
+
+    private static String varchar(int length) {
+        return "VARCHAR(" + length + ")";
     }
 
     private void createIndex(Statement stmt, String name, String table, String columns) throws SQLException {
@@ -181,14 +210,20 @@ public class SqlMessageStore implements MessageStore {
         T run(Connection conn) throws SQLException;
     }
 
+    /** Runs auto-committed statements on one pooled connection. */
     private <T> T read(SqlWork<T> work) {
         try (Connection conn = dataSource.getConnection()) {
             return work.run(conn);
         } catch (SQLException e) {
-            throw new IllegalStateException("Database error: " + e.getMessage(), e);
+            throw new InfrastructureUnavailableException(COMPONENT, e);
         }
     }
 
+    /**
+     * Runs the work in one transaction, retrying serialization failures and deadlocks. A unique-key
+     * violation rolls back and surfaces as {@link UniqueViolationException} for the caller to
+     * resolve; any other database failure is an {@link InfrastructureUnavailableException}.
+     */
     private <T> T transaction(SqlWork<T> work) {
         for (int attempt = 1; ; attempt++) {
             try (Connection conn = dataSource.getConnection()) {
@@ -209,7 +244,10 @@ public class SqlMessageStore implements MessageStore {
                     log.debug("[{}] retrying transaction after {}", providerId, e.getSQLState());
                     continue;
                 }
-                throw new IllegalStateException("Database error: " + e.getMessage(), e);
+                if (SqlDialect.isUniqueViolation(e)) {
+                    throw new UniqueViolationException(e);
+                }
+                throw new InfrastructureUnavailableException(COMPONENT, e);
             }
         }
     }
@@ -291,24 +329,45 @@ public class SqlMessageStore implements MessageStore {
 
     @Override
     public ChatUser upsertUser(ChatUser user) {
-        return transaction(conn -> {
-            Object[] values = {user.getDisplayName(), user.getEmail(), user.getPhone(), user.getAvatarUrl(), user.getAbout(),
-                    Json.write(user.getPushTokens()), Json.write(user.getMetadata()), user.isDeactivated(),
-                    millis(user.getUpdatedAt() != null ? user.getUpdatedAt() : Instant.now())};
-            int updated = update(conn, "UPDATE " + users + " SET display_name = ?, email = ?, phone = ?, avatar_url = ?,"
-                            + " about = ?, push_tokens = ?, metadata = ?, deactivated = ?, updated_at = ?"
-                            + " WHERE tenant_id = ? AND id = ?",
-                    concat(values, user.getTenantId(), user.getId()));
-            if (updated == 0) {
-                Instant created = user.getCreatedAt() != null ? user.getCreatedAt() : Instant.now();
-                update(conn, "INSERT INTO " + users + " (display_name, email, phone, avatar_url, about, push_tokens, metadata,"
-                                + " deactivated, updated_at, tenant_id, id, created_at, last_seen_at)"
-                                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        concat(values, user.getTenantId(), user.getId(), millis(created), millis(user.getLastSeenAt())));
-            }
-            return one(conn, "SELECT * FROM " + users + " WHERE tenant_id = ? AND id = ?", this::mapUser,
-                    user.getTenantId(), user.getId()).orElseThrow();
-        });
+        try {
+            return transaction(conn -> writeUser(conn, user));
+        } catch (UniqueViolationException raced) {
+            // A concurrent first upsert inserted the row between our UPDATE and INSERT: update it now.
+            return retryAfterRace(() -> transaction(conn -> writeUser(conn, user)), "User");
+        }
+    }
+
+    private ChatUser writeUser(Connection conn, ChatUser user) throws SQLException {
+        Object[] values = {user.getDisplayName(), user.getEmail(), user.getPhone(), user.getAvatarUrl(), user.getAbout(),
+                Json.write(user.getPushTokens()), Json.write(user.getMetadata()), user.isDeactivated(),
+                millis(user.getUpdatedAt() != null ? user.getUpdatedAt() : Instant.now())};
+        int updated = update(conn, "UPDATE " + users + " SET display_name = ?, email = ?, phone = ?, avatar_url = ?,"
+                        + " about = ?, push_tokens = ?, metadata = ?, deactivated = ?, updated_at = ?"
+                        + " WHERE tenant_id = ? AND id = ?",
+                StoreSupport.concat(values, user.getTenantId(), user.getId()));
+        if (updated == 0) {
+            Instant created = user.getCreatedAt() != null ? user.getCreatedAt() : Instant.now();
+            update(conn, "INSERT INTO " + users + " (display_name, email, phone, avatar_url, about, push_tokens, metadata,"
+                            + " deactivated, updated_at, tenant_id, id, created_at, last_seen_at)"
+                            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    StoreSupport.concat(values, user.getTenantId(), user.getId(), millis(created),
+                            millis(user.getLastSeenAt())));
+        }
+        return one(conn, "SELECT * FROM " + users + " WHERE tenant_id = ? AND id = ?", this::mapUser,
+                user.getTenantId(), user.getId()).orElseThrow();
+    }
+
+    /** Second attempt after losing a first-insert race; losing again is a genuine conflict. */
+    private static <T> T retryAfterRace(Supplier<T> attempt, String what) {
+        try {
+            return attempt.get();
+        } catch (UniqueViolationException e) {
+            throw conflict(what, e);
+        }
+    }
+
+    private static DomainException conflict(String what, UniqueViolationException cause) {
+        return new DomainException(ErrorCode.CONFLICT, what + " conflicts with an existing record", cause);
     }
 
     @Override
@@ -324,7 +383,7 @@ public class SqlMessageStore implements MessageStore {
         }
         List<String> ids = List.copyOf(new LinkedHashSet<>(userIds));
         String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
-        Object[] params = concat(new Object[]{tenantId}, ids.toArray());
+        Object[] params = StoreSupport.concat(new Object[]{tenantId}, ids.toArray());
         return read(conn -> list(conn, "SELECT * FROM " + users + " WHERE tenant_id = ? AND id IN (" + placeholders + ")",
                 this::mapUser, params));
     }
@@ -335,7 +394,7 @@ public class SqlMessageStore implements MessageStore {
             return read(conn -> list(conn, "SELECT * FROM " + users + " WHERE tenant_id = ? ORDER BY id LIMIT ? OFFSET ?",
                     this::mapUser, tenantId, limit, offset));
         }
-        String pattern = "%" + query.trim().toLowerCase().replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
+        String pattern = "%" + UserSearch.normalize(query).replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
         return read(conn -> list(conn, "SELECT * FROM " + users + " WHERE tenant_id = ? AND (LOWER(id) LIKE ? ESCAPE '!'"
                         + " OR LOWER(display_name) LIKE ? ESCAPE '!' OR LOWER(email) LIKE ? ESCAPE '!')"
                         + " ORDER BY id LIMIT ? OFFSET ?",
@@ -423,27 +482,27 @@ public class SqlMessageStore implements MessageStore {
         }
         try {
             return transaction(conn -> {
-                Instant activity = conversation.getLastMessageAt() != null ? conversation.getLastMessageAt()
-                        : conversation.getCreatedAt();
                 update(conn, "INSERT INTO " + conversations + " (" + CONV_COLS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         conversation.getTenantId(), conversation.getId(), conversation.getType().name(),
                         conversation.getDirectKey(), conversation.getTitle(), conversation.getDescription(),
                         conversation.getAvatarUrl(), conversation.getCreatedBy(), conversation.getLastSeq(),
                         conversation.getLastMessageId(), conversation.getLastMessagePreview(),
                         conversation.getLastMessageSenderId(), millis(conversation.getLastMessageAt()),
-                        millis(activity), Json.write(conversation.getMetadata()),
+                        millis(conversation.activityAt()), Json.write(conversation.getMetadata()),
                         millis(conversation.getCreatedAt()), millis(conversation.getUpdatedAt()));
                 for (Participant p : initial) {
                     insertParticipant(conn, p);
                 }
                 return conversation;
             });
-        } catch (IllegalStateException e) {
-            if (conversation.getType() == Conversation.Type.DIRECT && e.getCause() instanceof SQLException se
-                    && SqlDialect.isUniqueViolation(se)) {
-                return findDirectConversation(conversation.getTenantId(), conversation.getDirectKey()).orElseThrow(() -> e);
-            }
-            throw e;
+        } catch (UniqueViolationException e) {
+            // Lost the race to a concurrent creator of the same DIRECT pair, or the same id was
+            // created twice (a caller retry): return what is stored.
+            Optional<Conversation> stored = conversation.getType() == Conversation.Type.DIRECT
+                    ? findDirectConversation(conversation.getTenantId(), conversation.getDirectKey())
+                    : Optional.empty();
+            return stored.or(() -> findConversation(conversation.getTenantId(), conversation.getId()))
+                    .orElseThrow(() -> conflict("Conversation", e));
         }
     }
 
@@ -538,22 +597,29 @@ public class SqlMessageStore implements MessageStore {
 
     @Override
     public void upsertParticipant(Participant p) {
-        transaction(conn -> {
-            int updated = update(conn, "UPDATE " + participants + " SET role = ?, joined_seq = ?,"
-                            + " delivered_seq = CASE WHEN delivered_seq < ? THEN ? ELSE delivered_seq END,"
-                            + " read_seq = CASE WHEN read_seq < ? THEN ? ELSE read_seq END,"
-                            + " muted = ?, archived = ?, pinned = ?, joined_at = ?, left_at = ?, updated_at = ?"
-                            + " WHERE tenant_id = ? AND conversation_id = ? AND user_id = ?",
-                    p.getRole().name(), p.getJoinedSeq(), p.getDeliveredSeq(), p.getDeliveredSeq(),
-                    p.getReadSeq(), p.getReadSeq(), p.isMuted(),
-                    p.isArchived(), p.isPinned(), millis(p.getJoinedAt()), millis(p.getLeftAt()),
-                    millis(p.getUpdatedAt() != null ? p.getUpdatedAt() : Instant.now()),
-                    p.getTenantId(), p.getConversationId(), p.getUserId());
-            if (updated == 0) {
-                insertParticipant(conn, p);
-            }
-            return null;
-        });
+        try {
+            transaction(conn -> writeParticipant(conn, p));
+        } catch (UniqueViolationException raced) {
+            // A concurrent first upsert inserted the row between our UPDATE and INSERT: update it now.
+            retryAfterRace(() -> transaction(conn -> writeParticipant(conn, p)), "Participant");
+        }
+    }
+
+    private Void writeParticipant(Connection conn, Participant p) throws SQLException {
+        int updated = update(conn, "UPDATE " + participants + " SET role = ?, joined_seq = ?,"
+                        + " delivered_seq = CASE WHEN delivered_seq < ? THEN ? ELSE delivered_seq END,"
+                        + " read_seq = CASE WHEN read_seq < ? THEN ? ELSE read_seq END,"
+                        + " muted = ?, archived = ?, pinned = ?, joined_at = ?, left_at = ?, updated_at = ?"
+                        + " WHERE tenant_id = ? AND conversation_id = ? AND user_id = ?",
+                p.getRole().name(), p.getJoinedSeq(), p.getDeliveredSeq(), p.getDeliveredSeq(),
+                p.getReadSeq(), p.getReadSeq(), p.isMuted(),
+                p.isArchived(), p.isPinned(), millis(p.getJoinedAt()), millis(p.getLeftAt()),
+                millis(p.getUpdatedAt() != null ? p.getUpdatedAt() : Instant.now()),
+                p.getTenantId(), p.getConversationId(), p.getUserId());
+        if (updated == 0) {
+            insertParticipant(conn, p);
+        }
+        return null;
     }
 
     @Override
@@ -623,15 +689,11 @@ public class SqlMessageStore implements MessageStore {
                 advance(conn, stored.getTenantId(), stored.getConversationId(), stored.getSenderId(), seq, seq);
                 return new AppendResult(stored, false);
             });
-        } catch (IllegalStateException e) {
+        } catch (UniqueViolationException e) {
             // A concurrent retry with the same clientMsgId won the race: return the winner.
-            if (message.getClientMsgId() != null && e.getCause() instanceof SQLException se && SqlDialect.isUniqueViolation(se)) {
-                Optional<ChatMessage> existing = read(conn -> findByClientMsgId(conn, message));
-                if (existing.isPresent()) {
-                    return new AppendResult(existing.get(), true);
-                }
-            }
-            throw e;
+            Optional<ChatMessage> winner = message.getClientMsgId() == null ? Optional.empty()
+                    : read(conn -> findByClientMsgId(conn, message));
+            return new AppendResult(winner.orElseThrow(() -> conflict("Message", e)), true);
         }
     }
 
@@ -647,14 +709,14 @@ public class SqlMessageStore implements MessageStore {
                 bind(ps, params);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (!rs.next()) {
-                        throw new IllegalArgumentException("Conversation not found: " + message.getConversationId());
+                        throw DomainException.notFound("Conversation");
                     }
                     return rs.getLong(1);
                 }
             }
         }
         if (update(conn, update, params) == 0) {
-            throw new IllegalArgumentException("Conversation not found: " + message.getConversationId());
+            throw DomainException.notFound("Conversation");
         }
         return count(conn, "SELECT last_seq FROM " + conversations + " WHERE tenant_id = ? AND id = ?",
                 message.getTenantId(), message.getConversationId());
@@ -734,12 +796,5 @@ public class SqlMessageStore implements MessageStore {
                     count(conn, "SELECT COUNT(*) FROM " + conversations + where, params),
                     count(conn, "SELECT COUNT(*) FROM " + messages + where, params));
         });
-    }
-
-    private static Object[] concat(Object[] first, Object... rest) {
-        Object[] out = new Object[first.length + rest.length];
-        System.arraycopy(first, 0, out, 0, first.length);
-        System.arraycopy(rest, 0, out, first.length, rest.length);
-        return out;
     }
 }

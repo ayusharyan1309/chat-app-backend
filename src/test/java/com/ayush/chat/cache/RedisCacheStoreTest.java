@@ -8,6 +8,8 @@ import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.connector.Maturity;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Ids;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.KeyScanCursor;
@@ -85,7 +87,7 @@ class RedisCacheStoreTest extends CacheStoreConformanceTest {
         ConnectorDescriptor d = factory.descriptor();
         assertThat(d.kind()).isEqualTo(ConnectorKind.CACHE);
         assertThat(d.id()).isEqualTo("redis");
-        assertThat(d.maturity()).isEqualTo("GA");
+        assertThat(d.maturity()).isEqualTo(Maturity.GA);
         assertThat(d.compatibleWith()).contains("Valkey", "KeyDB", "Dragonfly", "Amazon ElastiCache",
                 "Azure Cache for Redis", "Upstash");
         assertThat(d.field("uri").type()).isEqualTo(ConfigField.FieldType.SECRET);
@@ -109,10 +111,13 @@ class RedisCacheStoreTest extends CacheStoreConformanceTest {
     }
 
     @Test
-    void healthIsDownAfterClose() throws Exception {
+    void healthIsDownAndCommandsAreUnavailableAfterClose() throws Exception {
         CacheStore other = createCache();
         other.close();
         assertThat(other.health().healthy()).isFalse();
+        assertThatThrownBy(() -> other.get(key("after-close"))).isInstanceOf(InfrastructureUnavailableException.class);
+        assertThatThrownBy(() -> other.increment(key("after-close"), 1, null))
+                .isInstanceOf(InfrastructureUnavailableException.class);
     }
 
     @Test

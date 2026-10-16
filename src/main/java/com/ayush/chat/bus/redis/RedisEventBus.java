@@ -1,13 +1,16 @@
 package com.ayush.chat.bus.redis;
 
 import com.ayush.chat.bus.EventBus;
+import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Ids;
 import io.lettuce.core.Limit;
 import io.lettuce.core.Range;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisCommandExecutionException;
+import io.lettuce.core.RedisException;
 import io.lettuce.core.RedisNoScriptException;
 import io.lettuce.core.RedisURI;
 import io.lettuce.core.ScriptOutputType;
@@ -26,6 +29,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -39,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -62,9 +67,15 @@ import java.util.function.Consumer;
  * subscription sees messages in publish order. A group with several members spreads entries across
  * them, so per-key order holds across a group only when it has one member; reclaimed entries are
  * processed late.
+ *
+ * <p>Failures to publish or subscribe (Redis unreachable, bus closed) surface as
+ * {@link InfrastructureUnavailableException} (503). Network I/O is never done while holding a
+ * monitor ({@code synchronized}), so virtual threads calling the bus are not pinned.
  */
 @Slf4j
 public class RedisEventBus implements EventBus {
+
+    private static final String COMPONENT = ConnectorKind.EVENT_BUS.getDisplayName();
 
     public static final Duration DEFAULT_CLAIM_IDLE = Duration.ofSeconds(60);
     private static final Duration COMMAND_TIMEOUT = Duration.ofSeconds(5);
@@ -90,8 +101,9 @@ public class RedisEventBus implements EventBus {
     private final Duration claimInterval;
     private final String location;
     private final String publishSha;
-    private final String instanceId = Ids.randomToken(10).toLowerCase();
-    private final Object pubSubLock = new Object();
+    private final String instanceId = Ids.randomToken(10).toLowerCase(Locale.ROOT);
+    /** Guards {@link #pubSub} and the SUBSCRIBE/UNSUBSCRIBE bookkeeping of {@link #channels}. */
+    private final ReentrantLock pubSubLock = new ReentrantLock();
     private StatefulRedisPubSubConnection<String, String> pubSub;
     private final Map<String, List<BroadcastSubscription>> channels = new ConcurrentHashMap<>();
     private final Set<GroupSubscription> groups = ConcurrentHashMap.newKeySet();
@@ -164,9 +176,13 @@ public class RedisEventBus implements EventBus {
         String[] keys = {streamKey(topic)};
         String[] args = {channel(topic), String.valueOf(streamMaxLen), payload, key == null ? "" : key};
         try {
-            redis.evalsha(publishSha, ScriptOutputType.INTEGER, keys, args);
-        } catch (RedisNoScriptException e) {
-            redis.eval(PUBLISH, ScriptOutputType.INTEGER, keys, args);
+            try {
+                redis.evalsha(publishSha, ScriptOutputType.INTEGER, keys, args);
+            } catch (RedisNoScriptException e) {
+                redis.eval(PUBLISH, ScriptOutputType.INTEGER, keys, args);
+            }
+        } catch (RedisException e) {
+            throw new InfrastructureUnavailableException(COMPONENT, e);
         }
         published.incrementAndGet();
     }
@@ -176,12 +192,17 @@ public class RedisEventBus implements EventBus {
         ensureOpen();
         Objects.requireNonNull(handler, "handler");
         int n = subscriptionSeq.incrementAndGet();
-        Subscription subscription = group == null
-                ? subscribeBroadcast(channel(topic), handler, n)
-                : subscribeGroup(streamKey(topic), group, handler, n);
+        Subscription subscription;
+        try {
+            subscription = group == null
+                    ? subscribeBroadcast(channel(topic), handler, n)
+                    : subscribeGroup(streamKey(topic), group, handler, n);
+        } catch (RedisException e) {
+            throw new InfrastructureUnavailableException(COMPONENT, e);
+        }
         if (closed.get()) {
             subscription.close();
-            throw new IllegalStateException("Event bus closed");
+            throw closedException();
         }
         return subscription;
     }
@@ -193,11 +214,14 @@ public class RedisEventBus implements EventBus {
             activeGroups.forEach(GroupSubscription::signalStop);
             activeGroups.forEach(GroupSubscription::close);
             channels.values().stream().flatMap(List::stream).toList().forEach(BroadcastSubscription::close);
-            synchronized (pubSubLock) {
+            pubSubLock.lock();
+            try {
                 if (pubSub != null) {
                     closeQuietly(pubSub);
                     pubSub = null;
                 }
+            } finally {
+                pubSubLock.unlock();
             }
             closeQuietly(connection);
             client.shutdown(Duration.ZERO, Duration.ofSeconds(2));
@@ -206,8 +230,12 @@ public class RedisEventBus implements EventBus {
 
     private void ensureOpen() {
         if (closed.get()) {
-            throw new IllegalStateException("Event bus closed");
+            throw closedException();
         }
+    }
+
+    private static InfrastructureUnavailableException closedException() {
+        return new InfrastructureUnavailableException(COMPONENT, "closed");
     }
 
     private String channel(String topic) {
@@ -238,7 +266,8 @@ public class RedisEventBus implements EventBus {
 
     private Subscription subscribeBroadcast(String channel, Consumer<String> handler, int n) {
         BroadcastSubscription subscription = new BroadcastSubscription(channel, handler, n);
-        synchronized (pubSubLock) {
+        pubSubLock.lock();
+        try {
             ensureOpen();
             if (pubSub == null) {
                 pubSub = client.connectPubSub();
@@ -265,12 +294,15 @@ public class RedisEventBus implements EventBus {
                     throw e;
                 }
             }
+        } finally {
+            pubSubLock.unlock();
         }
         return subscription;
     }
 
     private void removeBroadcast(BroadcastSubscription subscription) {
-        synchronized (pubSubLock) {
+        pubSubLock.lock();
+        try {
             List<BroadcastSubscription> subs = channels.get(subscription.channel);
             if (subs != null && subs.remove(subscription) && subs.isEmpty()) {
                 channels.remove(subscription.channel);
@@ -282,6 +314,8 @@ public class RedisEventBus implements EventBus {
                     }
                 }
             }
+        } finally {
+            pubSubLock.unlock();
         }
     }
 
@@ -474,7 +508,7 @@ public class RedisEventBus implements EventBus {
                     cursor = claimed.getId();
                 } while (running && cursor != null && !"0-0".equals(cursor));
             } catch (RedisCommandExecutionException e) {
-                if (e.getMessage() != null && e.getMessage().toLowerCase().contains("unknown command")) {
+                if (e.getMessage() != null && e.getMessage().toLowerCase(Locale.ROOT).contains("unknown command")) {
                     claimSupported = false;
                     log.warn("XAUTOCLAIM not supported by this server (needs Redis 6.2+); abandoned entries on {} will not be reclaimed", stream);
                 } else {

@@ -7,6 +7,8 @@ import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.connector.Maturity;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.push.PushSender;
 import com.ayush.chat.push.PushSender.PushNotification;
@@ -91,7 +93,7 @@ class FcmPushSenderTest {
         ConnectorDescriptor d = factory.descriptor();
         assertThat(d.kind()).isEqualTo(ConnectorKind.PUSH);
         assertThat(d.id()).isEqualTo("fcm");
-        assertThat(d.maturity()).isEqualTo("GA");
+        assertThat(d.maturity()).isEqualTo(Maturity.GA);
         assertThat(d.field("credentialsJson").type()).isEqualTo(ConfigField.FieldType.SECRET);
         assertThat(d.field("credentialsJson").required()).isTrue();
         assertThat(d.field("projectId").required()).isFalse();
@@ -142,7 +144,8 @@ class FcmPushSenderTest {
         first.close();
         assertThat(appNames()).doesNotContain(first.appName()).contains(second.appName());
         assertThat(first.health().healthy()).isFalse();
-        assertThatThrownBy(() -> first.send(notification(Set.of("t"), Map.of()))).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> first.send(notification(Set.of("t"), Map.of())))
+                .isInstanceOf(InfrastructureUnavailableException.class);
     }
 
     @Test

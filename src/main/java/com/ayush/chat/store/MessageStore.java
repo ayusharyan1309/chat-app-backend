@@ -107,7 +107,10 @@ public interface MessageStore extends Connector {
 
     // ---------------------------------------------------------------- messages
 
-    /** See the class contract. The message's id and createdAt are set by the caller. */
+    /**
+     * See the class contract. The message's id and createdAt are set by the caller. Throws
+     * {@code DomainException.notFound("Conversation")} when the conversation does not exist.
+     */
     AppendResult appendMessage(ChatMessage message);
 
     Optional<ChatMessage> findMessage(String tenantId, String conversationId, String messageId);

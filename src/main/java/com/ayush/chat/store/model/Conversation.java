@@ -41,4 +41,13 @@ public class Conversation {
     public static String directKey(String userA, String userB) {
         return userA.compareTo(userB) <= 0 ? userA + "|" + userB : userB + "|" + userA;
     }
+
+    /**
+     * When the conversation last saw activity: its last message, or its creation when it has none.
+     * Orders the inbox and is the inbox paging cursor. (Deliberately not a bean getter, so it is
+     * never serialised as a field.)
+     */
+    public Instant activityAt() {
+        return lastMessageAt != null ? lastMessageAt : createdAt;
+    }
 }

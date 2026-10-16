@@ -1,13 +1,17 @@
 package com.ayush.chat.store;
 
-import com.ayush.chat.store.sql.AbstractSqlStoreFactory;
 import com.ayush.chat.core.connector.ConnectorSettings;
+import com.ayush.chat.core.error.InfrastructureUnavailableException;
 import com.ayush.chat.core.util.Ids;
+import com.ayush.chat.store.sql.AbstractSqlStoreFactory;
 import com.ayush.chat.store.sql.SqlStoreFactories;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Runs the conformance suite against every SQL dialect. H2 always runs; PostgreSQL and MySQL run
@@ -16,7 +20,7 @@ import java.util.Map;
  */
 class SqlMessageStoreTests {
 
-    private static MessageStore create(com.ayush.chat.store.sql.AbstractSqlStoreFactory factory, Map<String, Object> raw) {
+    private static MessageStore create(AbstractSqlStoreFactory factory, Map<String, Object> raw) {
         return factory.create(ConnectorSettings.withDefaults(factory.descriptor(), raw));
     }
 
@@ -27,6 +31,15 @@ class SqlMessageStoreTests {
             return create(new SqlStoreFactories.H2(), Map.of(
                     "url", "jdbc:h2:mem:store-" + Ids.randomToken(6) + ";DB_CLOSE_DELAY=-1",
                     "username", "sa", "poolSize", 10));
+        }
+
+        @Test
+        void databaseFailuresAreUnavailable() {
+            store.close(); // the pool is gone, as when the database is unreachable
+            assertThatThrownBy(() -> store.findUser(tenant, "alice"))
+                    .isInstanceOf(InfrastructureUnavailableException.class);
+            assertThatThrownBy(() -> direct("alice", "bob"))
+                    .isInstanceOf(InfrastructureUnavailableException.class);
         }
     }
 

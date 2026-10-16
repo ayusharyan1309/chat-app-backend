@@ -20,7 +20,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -46,7 +48,7 @@ class S3BlobStoreIntegrationTest {
         putIfSet(raw, "accessKeyId", "S3_TEST_ACCESS_KEY_ID");
         putIfSet(raw, "secretAccessKey", "S3_TEST_SECRET_ACCESS_KEY");
         putIfSet(raw, "pathStyle", "S3_TEST_PATH_STYLE");
-        raw.put("keyPrefix", "chat-it-" + Ids.randomToken(8).toLowerCase());
+        raw.put("keyPrefix", "chat-it-" + Ids.randomToken(8).toLowerCase(Locale.ROOT));
         store = factory.create(ConnectorSettings.withDefaults(factory.descriptor(), raw));
     }
 
@@ -96,7 +98,7 @@ class S3BlobStoreIntegrationTest {
     @Test
     void uploadWithUnknownLengthAndDefaultContentType() throws Exception {
         byte[] content = new byte[70_000];
-        new java.util.Random(7).nextBytes(content);
+        new Random(7).nextBytes(content);
         String key = key("tenant-1/blob.bin");
         store.put(key, new ByteArrayInputStream(content), -1, null);
         BlobObject blob = store.get(key).orElseThrow();
