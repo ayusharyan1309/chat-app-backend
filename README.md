@@ -33,11 +33,11 @@ or an in-process equivalent.
 
 ## Quick start
 
-Requirements: Java 21, Maven 3.9, Node 20 (for the dashboard).
+Requirements: Java 21 and Node 22 LTS (or 20.19+) for the console. Maven comes with the wrapper.
 
 ```bash
 # Backend: zero external services (H2 files + in-memory cache/bus + local media under ./data)
-mvn spring-boot:run
+./mvnw spring-boot:run
 # → http://localhost:8080   (Swagger UI: /swagger-ui.html)
 
 # Dashboard (dev server with API proxy)
@@ -112,11 +112,13 @@ The design and its trade-offs are in [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Configuration
 
 All settings are environment variables; [.env.example](.env.example) documents every one, with
-presets. The essentials for production:
+presets. Tuning knobs (cache lifetimes, thread pools, retry policies, token lifetimes) are listed
+with their defaults under `platform.*` in
+[application.yml](src/main/resources/application.yml). The essentials for production:
 
 | Variable | Purpose |
 |---|---|
-| `PLATFORM_MASTER_KEY` | Encrypts connector secrets at rest and signs media URLs. 32+ random chars, same on all nodes. |
+| `PLATFORM_MASTER_KEY` | 32+ random chars, same on all nodes. Separate keys are derived from it for encrypting connector secrets and signing media URLs (and JWTs when no JWT secret is set). |
 | `PLATFORM_JWT_SECRET` | Signs admin and user tokens. Same on all nodes. |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | First owner account (created only when no admin exists). |
 | `CONTROL_DB_URL` (+ `_USERNAME`, `_PASSWORD`) | Control plane: PostgreSQL or MySQL in production. |
@@ -129,10 +131,13 @@ Running more than one node requires a shared control-plane DB and message store,
 ## Testing
 
 ```bash
-mvn test        # unit, conformance and end-to-end suites (H2, in-memory, embedded Kafka, Mongo fake)
+./mvnw test          # unit + connector conformance suites (H2, in-memory, embedded Kafka, Mongo fake)
+./mvnw verify        # … plus the end-to-end *IT suites: a real server driven over HTTP and STOMP
+cd frontend && npm run check && npm run build   # console: lint, type-check, Vitest, production build
 ```
 
-Optional live backends turn on more suites automatically:
+Live backends are opt-in. Point these variables at **throwaway** instances; the suites create
+and drop data, and the Redis suites flush the Lua script cache:
 
 | Env | Enables |
 |---|---|
@@ -142,26 +147,38 @@ Optional live backends turn on more suites automatically:
 | `CASSANDRA_CONTACT_POINTS` | Cassandra / ScyllaDB conformance |
 | `FIRESTORE_EMULATOR_HOST` | Firestore conformance |
 | `S3_TEST_BUCKET` | S3 integration |
+| `IT_CONTROL_DB_URL`, `IT_STORE_PROVIDER`, `IT_STORE_URL`, `IT_CACHE_PROVIDER`, `IT_BUS_PROVIDER` (+ `_USERNAME`/`_PASSWORD`) | Runs the end-to-end suite on real backends instead of H2 + in-memory |
 | `CLUSTER_NODE_A`, `CLUSTER_NODE_B` | Two-node cluster smoke test against running nodes |
+| `LOAD_TEST_URL` | Throughput / latency smoke test against a running node |
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs all of the above that need only
+PostgreSQL, MySQL and Redis, plus the console checks and a container build.
 
 ## Project layout
 
 ```
 src/main/java/com/ayush/chat/
-├── core/        connector framework, layered config, crypto, cluster membership, errors, SSRF policy
-├── store/       MessageStore SPI + memory, sql (H2/PostgreSQL/MySQL/Supabase), mongo, cassandra, firestore
-├── cache/       CacheStore SPI + memory, redis
-├── bus/         EventBus SPI + memory, redis, kafka
-├── blob/        BlobStore SPI + local, s3
-├── push/        PushSender SPI + none, fcm, webhook
-├── tenant/      tenants, plans, features, limits, usage metering
-├── auth/        admin login, API keys, JWTs, external token verification, security chain
-├── chat/        messaging domain, realtime gateway, presence, media, webhooks, push dispatch, REST + STOMP
-└── admin/       admin API (system, infrastructure, tenants, plans, audit)
-frontend/        React admin console + chat playground
-deploy/          nginx, Kubernetes, Postgres init
-docs/            API reference and the implementation plan
+├── core/          connector framework, layered config, crypto (KeyRing), cluster + bus topics,
+│                  error taxonomy, persistence converters, SSRF policy
+├── store/ cache/ bus/ blob/ push/
+│                  the five SPIs and their adapters (sql, mongo, cassandra, firestore, redis, kafka, s3, fcm, …)
+├── tenant/        tenants, plans, features, limits, quotas (QuotaService) and metering (UsageMeter)
+├── auth/          admin login, API keys, platform JWTs, user-token policy, external tokens, security chain
+├── audit/         append-only audit log (AuditAction)
+├── chat/
+│   ├── application/   messaging use cases: users, blocks, conversations, membership, messages, receipts
+│   ├── port/          what the use cases need from outside (RealtimePublisher, PresenceQuery)
+│   ├── realtime/      bus-backed gateway, presence, cluster control channel
+│   ├── api/ ws/       REST controllers and STOMP endpoints
+│   └── media/ webhook/ push/ metrics/
+└── admin/         operator API: system, infrastructure, plans, audit; tenant/ holds the tenant pages
+frontend/          React operator console + chat playground
+deploy/            nginx, Kubernetes, Postgres init
+docs/              API reference, engineering review, implementation plan
 ```
+
+How the code is organised and how to extend it: [CONTRIBUTING.md](CONTRIBUTING.md). What the
+latest design review changed and what it deferred: [docs/ENGINEERING_REVIEW.md](docs/ENGINEERING_REVIEW.md).
 
 ## Roadmap
 

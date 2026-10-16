@@ -21,6 +21,7 @@ import java.util.Set;
 import static com.ayush.chat.chat.application.ChatFixture.TENANT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 
@@ -199,9 +200,5 @@ class MessagingServicesTest {
 
         assertThat(f.published.ofType(ChatEvent.RECEIPT)).singleElement()
                 .satisfies(d -> assertThat(d.users()).containsExactly("bob"));
-    }
-
-    private static Throwable catchThrowable(org.assertj.core.api.ThrowableAssert.ThrowingCallable call) {
-        return org.assertj.core.api.Assertions.catchThrowable(call);
     }
 }

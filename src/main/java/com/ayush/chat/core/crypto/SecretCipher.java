@@ -1,6 +1,5 @@
 package com.ayush.chat.core.crypto;
 
-import com.ayush.chat.core.config.PlatformProperties;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.Cipher;

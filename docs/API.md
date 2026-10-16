@@ -10,8 +10,19 @@ Interactive docs: `/swagger-ui.html` (OpenAPI at `/v3/api-docs`).
 Tenant-supplied callback URLs (webhooks, push webhook, JWKS) must resolve to public addresses unless the
 operator sets `PLATFORM_SECURITY_ALLOW_PRIVATE_NETWORK_CALLBACKS=true`.
 
-Error codes: `bad_request`, `validation_failed`, `unauthorized`, `forbidden`, `not_found`, `conflict`,
-`feature_disabled`, `quota_exceeded`, `rate_limited`, `unavailable`, `internal_error`.
+| `error` | HTTP | Meaning |
+|---|---|---|
+| `bad_request`, `validation_failed` | 400 | The request is malformed or breaks a rule (field length, message type payload, …). |
+| `unauthorized` | 401 | Missing, invalid or expired credentials. |
+| `forbidden` | 403 | Authenticated but not allowed: wrong role, suspended tenant, deactivated user, blocked contact. |
+| `feature_disabled` | 403 | The tenant's plan does not include the feature (`message` names it). |
+| `not_found` | 404 | Unknown resource. Conversations you are not a member of are also 404, so ids cannot be probed. |
+| `method_not_allowed` | 405 | |
+| `conflict` | 409 | Duplicate slug or email, last owner, plan in use, … |
+| `payload_too_large` | 413 | Upload above the server limit. |
+| `quota_exceeded`, `rate_limited` | 429 | Plan limit reached, or too many requests (send rate, admin login attempts). |
+| `unavailable` | 503 | A backing service (store, cache, bus, media storage, push) is unreachable. Safe to retry. |
+| `internal_error` | 500 | A bug; the details are logged server-side, never returned. |
 
 ## Credentials
 
@@ -199,7 +210,7 @@ Events: `message.created`, `message.updated`, `message.deleted`, `conversation.c
 | GET | `/api/v1/server/users?q=&offset=&limit=` | → `{items: User[], total}` |
 | GET | `/api/v1/server/users/{id}` | → `User` |
 | DELETE | `/api/v1/server/users/{id}` | → 204 (deactivate; tokens for the user stop working) |
-| POST | `/api/v1/server/tokens` | `{userId, ttlMinutes?}` → `{token, expiresAt}` |
+| POST | `/api/v1/server/tokens` | `{userId, ttlMinutes?}` → `{token, expiresAt}`. `ttlMinutes` defaults to the tenant's token lifetime and must be within `platform.security.min/max-user-token-ttl` (5 – 43200 minutes by default); the user must be active |
 | POST | `/api/v1/server/conversations/{id}/messages` | `{senderId, type, content, clientMsgId?, metadata?}` → `Message` (bots / system notices) |
 | GET | `/api/v1/server/stats` | → `{users, conversations, messages, messagesToday, connections, usage: [...last 30 days]}` (requires `analytics`) |
 
@@ -293,4 +304,24 @@ Server → client: subscribe to `/user/queue/events`. Every frame is an envelope
 ```json
 { "id": "evt_...", "type": "message.created", "tenant": "acme", "createdAt": "...", "data": { ... } }
 ```
-Delivered at-least-once with up to 5 attempts (exponential backoff). Respond 2xx within 10 s.
+Delivered at-least-once with up to 5 attempts (exponential backoff from 10 s). Respond 2xx within 10 s.
+All three are configurable under `platform.webhooks.*`. Verify a request by recomputing the HMAC over
+the raw body exactly as received, comparing in constant time, and rejecting timestamps older than a
+few minutes (replay protection).
+
+## 5. Push webhook (the `webhook` push connector)
+
+When the push slot uses the `webhook` provider, each notification for an offline recipient is
+`POST`ed to the configured URL:
+
+```json
+{ "event": "push", "timestamp": 1760000000, "tenantId": "acme", "userId": "bob",
+  "deviceTokens": ["..."], "title": "Alice", "body": "Hello Bob",
+  "data": { "type": "message.new", "conversationId": "...", "messageId": "...", "seq": "42" } }
+```
+
+Headers: `X-Chat-Timestamp` and, when a secret is configured,
+`X-Chat-Signature: sha256=<hex HMAC-SHA256(secret, timestamp + "." + body)>` — the same scheme as
+tenant webhooks. (Before v2.0 the push webhook signed the body only; receivers must switch to the
+timestamped form.) Optionally answer `{ "delivered": n, "failed": n, "invalidTokens": ["..."] }`;
+tokens listed as invalid are removed from the user's devices.

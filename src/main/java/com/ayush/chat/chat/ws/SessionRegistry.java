@@ -9,6 +9,7 @@ import org.springframework.web.socket.WebSocketSession;
 import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 /**
  * Raw WebSocket sessions on this node, so the platform can force-close them (tenant suspended,
@@ -46,7 +47,7 @@ public class SessionRegistry {
         return closeWhere(p -> p.tenant().equals(tenant) && p.userId().equals(userId), reason);
     }
 
-    private int closeWhere(java.util.function.Predicate<Principals.ChatUserPrincipal> match, String reason) {
+    private int closeWhere(Predicate<Principals.ChatUserPrincipal> match, String reason) {
         int closed = 0;
         for (Map.Entry<String, Principals.ChatUserPrincipal> entry : users.entrySet()) {
             WebSocketSession session = sessions.get(entry.getKey());

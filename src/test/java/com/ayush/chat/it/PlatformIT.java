@@ -42,11 +42,22 @@ import static org.awaitility.Awaitility.await;
 /**
  * End-to-end: a real server on a random port, driven exactly like a customer would —
  * admin console → tenant + API key → server API → user tokens → REST + STOMP clients.
+ *
+ * <p>Runs on H2 and in-memory connectors by default. The {@code IT_*} environment variables point
+ * the same scenarios at real backends (CI uses PostgreSQL and Redis), which is how the JPA mappings
+ * and connectors are verified on every supported database.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
-        "spring.datasource.url=jdbc:h2:mem:control-it;DB_CLOSE_DELAY=-1",
-        "platform.connectors.message-store.provider=h2",
-        "platform.connectors.message-store.settings.url=jdbc:h2:mem:store-it;DB_CLOSE_DELAY=-1",
+        "spring.datasource.url=${IT_CONTROL_DB_URL:jdbc:h2:mem:control-it;DB_CLOSE_DELAY=-1}",
+        "spring.datasource.username=${IT_CONTROL_DB_USERNAME:sa}",
+        "spring.datasource.password=${IT_CONTROL_DB_PASSWORD:}",
+        "platform.connectors.message-store.provider=${IT_STORE_PROVIDER:h2}",
+        "platform.connectors.message-store.settings.url=${IT_STORE_URL:jdbc:h2:mem:store-it;DB_CLOSE_DELAY=-1}",
+        "platform.connectors.message-store.settings.username=${IT_STORE_USERNAME:sa}",
+        "platform.connectors.message-store.settings.password=${IT_STORE_PASSWORD:}",
+        "platform.connectors.message-store.settings.tablePrefix=${IT_STORE_TABLE_PREFIX:chat_}",
+        "platform.connectors.cache.provider=${IT_CACHE_PROVIDER:memory}",
+        "platform.connectors.event-bus.provider=${IT_BUS_PROVIDER:memory}",
         "platform.connectors.blob-store.settings.directory=target/it-media",
         "platform.security.master-key=integration-test-master-key-0123456789",
         "platform.security.allow-private-network-callbacks=true",
@@ -421,13 +432,14 @@ class PlatformIT {
         JsonNode test = admin("POST", "/api/admin/infrastructure/cache/test",
                 Map.of("provider", "memory", "settings", Map.of()), 200);
         assertThat(test.get("healthy").asBoolean()).isTrue();
+        String before = admin("GET", "/api/admin/infrastructure/message-store", null, 200).get("provider").asText();
         Response bad = call("PUT", "/api/admin/infrastructure/message-store",
                 Map.of("provider", "postgresql", "settings", Map.of("url", "jdbc:postgresql://127.0.0.1:1/nowhere",
                         "connectionTimeoutMs", 1500)),
                 Map.of("Authorization", "Bearer " + adminToken));
         assertThat(bad.status()).isEqualTo(400);
         JsonNode state = admin("GET", "/api/admin/infrastructure/message-store", null, 200);
-        assertThat(state.get("provider").asText()).isEqualTo("h2");
+        assertThat(state.get("provider").asText()).as("a failed apply keeps the active store").isEqualTo(before);
         assertThat(state.at("/health/healthy").asBoolean()).isTrue();
     }
 

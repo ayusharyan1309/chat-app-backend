@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -52,6 +53,6 @@ class InputValidatorTest {
     }
 
     private static void assertCode(DomainException e, ErrorCode code) {
-        org.assertj.core.api.Assertions.assertThat(e.getErrorCode()).isEqualTo(code);
+        assertThat(e.getErrorCode()).isEqualTo(code);
     }
 }

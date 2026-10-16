@@ -1,5 +1,9 @@
 # Chat Platform v2 — Plan
 
+> Historical: the plan this version was built from. Since then the code was restructured (for
+> example `ChatService` is now six focused services); the current design is in
+> [ARCHITECTURE.md](../ARCHITECTURE.md) and the changes in [ENGINEERING_REVIEW.md](ENGINEERING_REVIEW.md).
+
 Goal: a plug-and-play, multi-tenant messaging platform (WhatsApp-class design) where **every
 infrastructure dependency is a pluggable connector** selected by configuration or from the admin
 dashboard at runtime — no code changes, no redeploys.

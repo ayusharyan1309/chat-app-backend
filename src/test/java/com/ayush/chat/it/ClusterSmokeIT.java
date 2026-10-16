@@ -19,6 +19,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
@@ -122,7 +123,7 @@ class ClusterSmokeIT {
                     Map.of("Authorization", "Bearer " + alice), 200).get("id").asText();
             assertThat(bobOnB.await("conversation.updated").path("conversationId").asText()).isEqualTo(conversation);
 
-            aliceOnA.session.send("/app/presence.watch", Map.of("userIds", java.util.List.of("bob")));
+            aliceOnA.session.send("/app/presence.watch", Map.of("userIds", List.of("bob")));
             assertThat(aliceOnA.await("presence").at("/data/online").asBoolean()).isTrue();
 
             aliceOnA.session.send("/app/messages.send", Map.of("conversationId", conversation, "clientMsgId", "x1",

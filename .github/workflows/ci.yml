@@ -45,6 +45,17 @@ jobs:
       TEST_MYSQL_USER: root
       TEST_MYSQL_PASSWORD: chat
       REDIS_URL: redis://localhost:6379
+      # End-to-end scenarios (PlatformIT) on PostgreSQL + Redis instead of H2 + in-memory.
+      IT_CONTROL_DB_URL: jdbc:postgresql://localhost:5432/chat_test
+      IT_CONTROL_DB_USERNAME: chat
+      IT_CONTROL_DB_PASSWORD: chat
+      IT_STORE_PROVIDER: postgresql
+      IT_STORE_URL: jdbc:postgresql://localhost:5432/chat_test
+      IT_STORE_USERNAME: chat
+      IT_STORE_PASSWORD: chat
+      IT_STORE_TABLE_PREFIX: it_
+      IT_CACHE_PROVIDER: redis
+      IT_BUS_PROVIDER: redis
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
