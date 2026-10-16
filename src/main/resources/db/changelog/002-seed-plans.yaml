@@ -1,0 +1,66 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-seed-plans
+      author: platform
+      changes:
+        - insert:
+            tableName: platform_plans
+            columns:
+              - column: { name: code, value: free }
+              - column: { name: name, value: Free }
+              - column: { name: description, value: "For prototypes and small communities" }
+              - column: { name: price_monthly, valueNumeric: 0 }
+              - column: { name: price_yearly, valueNumeric: 0 }
+              - column: { name: max_users, valueNumeric: 100 }
+              - column: { name: max_messages_per_day, valueNumeric: 5000 }
+              - column: { name: max_connections, valueNumeric: 50 }
+              - column: { name: max_storage_mb, valueNumeric: 500 }
+              - column: { name: max_group_size, valueNumeric: 32 }
+              - column: { name: messages_per_second, valueNumeric: 5 }
+              - column: { name: features, value: "read-receipts,typing-indicators,presence" }
+              - column: { name: is_default, valueBoolean: true }
+              - column: { name: sort_order, valueNumeric: 0 }
+        - insert:
+            tableName: platform_plans
+            columns:
+              - column: { name: code, value: starter }
+              - column: { name: name, value: Starter }
+              - column: { name: description, value: "Groups, media and push for growing apps" }
+              - column: { name: price_monthly, valueNumeric: 49 }
+              - column: { name: price_yearly, valueNumeric: 490 }
+              - column: { name: max_users, valueNumeric: 10000 }
+              - column: { name: max_messages_per_day, valueNumeric: 250000 }
+              - column: { name: max_connections, valueNumeric: 2000 }
+              - column: { name: max_storage_mb, valueNumeric: 20480 }
+              - column: { name: max_group_size, valueNumeric: 256 }
+              - column: { name: messages_per_second, valueNumeric: 10 }
+              - column: { name: features, value: "read-receipts,typing-indicators,presence,group-chat,media-sharing,message-reactions,message-editing,message-deletion,push-notifications" }
+              - column: { name: sort_order, valueNumeric: 1 }
+        - insert:
+            tableName: platform_plans
+            columns:
+              - column: { name: code, value: pro }
+              - column: { name: name, value: Pro }
+              - column: { name: description, value: "Integrations, analytics and your own auth" }
+              - column: { name: price_monthly, valueNumeric: 299 }
+              - column: { name: price_yearly, valueNumeric: 2990 }
+              - column: { name: max_users, valueNumeric: 250000 }
+              - column: { name: max_messages_per_day, valueNumeric: 5000000 }
+              - column: { name: max_connections, valueNumeric: 50000 }
+              - column: { name: max_storage_mb, valueNumeric: 512000 }
+              - column: { name: max_group_size, valueNumeric: 1024 }
+              - column: { name: messages_per_second, valueNumeric: 20 }
+              - column: { name: features, value: "read-receipts,typing-indicators,presence,group-chat,media-sharing,file-sharing,message-reactions,message-editing,message-deletion,push-notifications,webhooks,external-auth,analytics,custom-branding" }
+              - column: { name: sort_order, valueNumeric: 2 }
+        - insert:
+            tableName: platform_plans
+            columns:
+              - column: { name: code, value: enterprise }
+              - column: { name: name, value: Enterprise }
+              - column: { name: description, value: "Unlimited scale, dedicated database, SLA" }
+              - column: { name: price_monthly, valueNumeric: 0 }
+              - column: { name: price_yearly, valueNumeric: 0 }
+              - column: { name: max_group_size, valueNumeric: 1024 }
+              - column: { name: messages_per_second, valueNumeric: 50 }
+              - column: { name: features, value: "read-receipts,typing-indicators,presence,group-chat,media-sharing,file-sharing,message-reactions,message-editing,message-deletion,push-notifications,webhooks,external-auth,analytics,custom-branding" }
+              - column: { name: sort_order, valueNumeric: 3 }

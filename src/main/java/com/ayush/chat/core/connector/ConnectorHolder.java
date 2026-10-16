@@ -1,0 +1,97 @@
+package com.ayush.chat.core.connector;
+
+import lombok.extern.slf4j.Slf4j;
+
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
+
+/**
+ * Holds the active connector for a slot and hot-swaps it when configuration changes.
+ * In-flight callers keep using the previous instance, which is closed after a grace period.
+ */
+@Slf4j
+public class ConnectorHolder<T extends Connector> implements AutoCloseable {
+
+    private static final ScheduledExecutorService RETIRER = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "connector-retirer");
+        t.setDaemon(true);
+        return t;
+    });
+
+    private final String name;
+    private final ConnectorRegistry registry;
+    private final long graceMillis;
+    private final AtomicReference<Active<T>> active = new AtomicReference<>();
+    private final List<BiConsumer<T, T>> swapListeners = new CopyOnWriteArrayList<>();
+
+    private record Active<T>(ConnectorConfig config, T connector) {
+    }
+
+    public ConnectorHolder(String name, ConnectorRegistry registry, long graceMillis) {
+        this.name = name;
+        this.registry = registry;
+        this.graceMillis = graceMillis;
+    }
+
+    /** Listener receives (previous, next); previous is null on first activation. */
+    public void onSwap(BiConsumer<T, T> listener) {
+        swapListeners.add(listener);
+    }
+
+    public T get() {
+        Active<T> current = active.get();
+        if (current == null) {
+            throw new IllegalStateException(name + " is not configured");
+        }
+        return current.connector();
+    }
+
+    public boolean isActive() {
+        return active.get() != null;
+    }
+
+    public ConnectorConfig config() {
+        Active<T> current = active.get();
+        return current == null ? null : current.config();
+    }
+
+    /**
+     * Activate the given config. No-op if it equals the active one. On failure the previous
+     * connector stays active and the exception propagates.
+     */
+    public synchronized boolean apply(ConnectorConfig config) {
+        Active<T> current = active.get();
+        if (current != null && Objects.equals(current.config(), config)) {
+            return false;
+        }
+        T next = registry.create(config);
+        active.set(new Active<>(config, next));
+        log.info("{} -> {}", name, config.provider());
+        T previous = current == null ? null : current.connector();
+        for (BiConsumer<T, T> listener : swapListeners) {
+            try {
+                listener.accept(previous, next);
+            } catch (Exception e) {
+                log.error("{} swap listener failed", name, e);
+            }
+        }
+        if (previous != null) {
+            RETIRER.schedule(previous::close, graceMillis, TimeUnit.MILLISECONDS);
+        }
+        return true;
+    }
+
+    @Override
+    public synchronized void close() {
+        Active<T> current = active.getAndSet(null);
+        if (current != null) {
+            current.connector().close();
+        }
+    }
+}

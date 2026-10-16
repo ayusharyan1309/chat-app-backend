@@ -1,0 +1,199 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-connector-configs
+      author: platform
+      changes:
+        - createTable:
+            tableName: platform_connector_configs
+            columns:
+              - column: { name: id, type: BIGINT, autoIncrement: true, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: scope_key, type: VARCHAR(80), constraints: { nullable: false } }
+              - column: { name: kind, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: provider, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: settings_json, type: "${json}" }
+              - column: { name: version, type: BIGINT, defaultValueNumeric: 1, constraints: { nullable: false } }
+              - column: { name: updated_at, type: "${ts}" }
+              - column: { name: updated_by, type: VARCHAR(255) }
+        - addUniqueConstraint:
+            tableName: platform_connector_configs
+            columnNames: scope_key, kind
+            constraintName: uk_connector_scope_kind
+
+  - changeSet:
+      id: 001-plans
+      author: platform
+      changes:
+        - createTable:
+            tableName: platform_plans
+            columns:
+              - column: { name: id, type: BIGINT, autoIncrement: true, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: code, type: VARCHAR(50), constraints: { nullable: false, unique: true, uniqueConstraintName: uk_plan_code } }
+              - column: { name: name, type: VARCHAR(100), constraints: { nullable: false } }
+              - column: { name: description, type: VARCHAR(500) }
+              - column: { name: price_monthly, type: DECIMAL(10,2), defaultValueNumeric: 0 }
+              - column: { name: price_yearly, type: DECIMAL(10,2), defaultValueNumeric: 0 }
+              - column: { name: currency, type: VARCHAR(3), defaultValue: USD }
+              - column: { name: max_users, type: BIGINT }
+              - column: { name: max_messages_per_day, type: BIGINT }
+              - column: { name: max_connections, type: BIGINT }
+              - column: { name: max_storage_mb, type: BIGINT }
+              - column: { name: max_group_size, type: INT }
+              - column: { name: messages_per_second, type: INT }
+              - column: { name: features, type: VARCHAR(2000) }
+              - column: { name: is_default, type: BOOLEAN, defaultValueBoolean: false }
+              - column: { name: is_active, type: BOOLEAN, defaultValueBoolean: true }
+              - column: { name: sort_order, type: INT, defaultValueNumeric: 0 }
+              - column: { name: created_at, type: "${ts}" }
+              - column: { name: updated_at, type: "${ts}" }
+
+  - changeSet:
+      id: 001-tenants
+      author: platform
+      changes:
+        - createTable:
+            tableName: platform_tenants
+            columns:
+              - column: { name: id, type: BIGINT, autoIncrement: true, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: slug, type: VARCHAR(64), constraints: { nullable: false, unique: true, uniqueConstraintName: uk_tenant_slug } }
+              - column: { name: name, type: VARCHAR(255), constraints: { nullable: false } }
+              - column: { name: contact_email, type: VARCHAR(255) }
+              - column: { name: domain, type: VARCHAR(255) }
+              - column: { name: status, type: VARCHAR(20), constraints: { nullable: false } }
+              - column: { name: plan_code, type: VARCHAR(50), constraints: { nullable: false } }
+              - column: { name: trial_ends_at, type: "${ts}" }
+              - column: { name: limits_json, type: "${json}" }
+              - column: { name: branding_json, type: "${json}" }
+              - column: { name: settings_json, type: "${json}" }
+              - column: { name: auth_json, type: "${json}" }
+              - column: { name: created_at, type: "${ts}" }
+              - column: { name: updated_at, type: "${ts}" }
+              - column: { name: suspended_at, type: "${ts}" }
+              - column: { name: deleted_at, type: "${ts}" }
+
+  - changeSet:
+      id: 001-tenant-features
+      author: platform
+      changes:
+        - createTable:
+            tableName: platform_tenant_features
+            columns:
+              - column: { name: id, type: BIGINT, autoIncrement: true, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: tenant_id, type: BIGINT, constraints: { nullable: false, foreignKeyName: fk_feature_tenant, references: platform_tenants(id), deleteCascade: true } }
+              - column: { name: feature_id, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: enabled, type: BOOLEAN, constraints: { nullable: false } }
+              - column: { name: updated_at, type: "${ts}" }
+        - addUniqueConstraint:
+            tableName: platform_tenant_features
+            columnNames: tenant_id, feature_id
+            constraintName: uk_tenant_feature
+
+  - changeSet:
+      id: 001-api-keys
+      author: platform
+      changes:
+        - createTable:
+            tableName: platform_api_keys
+            columns:
+              - column: { name: id, type: BIGINT, autoIncrement: true, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: tenant_id, type: BIGINT, constraints: { nullable: false, foreignKeyName: fk_apikey_tenant, references: platform_tenants(id), deleteCascade: true } }
+              - column: { name: name, type: VARCHAR(100), constraints: { nullable: false } }
+              - column: { name: key_prefix, type: VARCHAR(24), constraints: { nullable: false } }
+              - column: { name: key_hash, type: VARCHAR(64), constraints: { nullable: false, unique: true, uniqueConstraintName: uk_apikey_hash } }
+              - column: { name: created_at, type: "${ts}" }
+              - column: { name: created_by, type: VARCHAR(255) }
+              - column: { name: last_used_at, type: "${ts}" }
+              - column: { name: revoked_at, type: "${ts}" }
+
+  - changeSet:
+      id: 001-admin-users
+      author: platform
+      changes:
+        - createTable:
+            tableName: platform_admin_users
+            columns:
+              - column: { name: id, type: BIGINT, autoIncrement: true, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: email, type: VARCHAR(255), constraints: { nullable: false, unique: true, uniqueConstraintName: uk_admin_email } }
+              - column: { name: password_hash, type: VARCHAR(255), constraints: { nullable: false } }
+              - column: { name: name, type: VARCHAR(255) }
+              - column: { name: role, type: VARCHAR(20), constraints: { nullable: false } }
+              - column: { name: active, type: BOOLEAN, defaultValueBoolean: true }
+              - column: { name: last_login_at, type: "${ts}" }
+              - column: { name: created_at, type: "${ts}" }
+
+  - changeSet:
+      id: 001-webhooks
+      author: platform
+      changes:
+        - createTable:
+            tableName: platform_webhooks
+            columns:
+              - column: { name: id, type: BIGINT, autoIncrement: true, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: tenant_id, type: BIGINT, constraints: { nullable: false, foreignKeyName: fk_webhook_tenant, references: platform_tenants(id), deleteCascade: true } }
+              - column: { name: url, type: VARCHAR(1000), constraints: { nullable: false } }
+              - column: { name: secret, type: VARCHAR(500), constraints: { nullable: false } }
+              - column: { name: events, type: VARCHAR(1000), constraints: { nullable: false } }
+              - column: { name: description, type: VARCHAR(255) }
+              - column: { name: active, type: BOOLEAN, defaultValueBoolean: true }
+              - column: { name: created_at, type: "${ts}" }
+              - column: { name: updated_at, type: "${ts}" }
+        - createTable:
+            tableName: platform_webhook_deliveries
+            columns:
+              - column: { name: id, type: BIGINT, autoIncrement: true, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: webhook_id, type: BIGINT, constraints: { nullable: false, foreignKeyName: fk_delivery_webhook, references: platform_webhooks(id), deleteCascade: true } }
+              - column: { name: event_id, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: event_type, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: status, type: VARCHAR(16), constraints: { nullable: false } }
+              - column: { name: attempts, type: INT, defaultValueNumeric: 0 }
+              - column: { name: response_code, type: INT }
+              - column: { name: error, type: VARCHAR(1000) }
+              - column: { name: duration_ms, type: BIGINT }
+              - column: { name: created_at, type: "${ts}" }
+              - column: { name: last_attempt_at, type: "${ts}" }
+        - createIndex:
+            tableName: platform_webhook_deliveries
+            indexName: idx_delivery_webhook_created
+            columns:
+              - column: { name: webhook_id }
+              - column: { name: created_at }
+
+  - changeSet:
+      id: 001-audit-log
+      author: platform
+      changes:
+        - createTable:
+            tableName: platform_audit_log
+            columns:
+              - column: { name: id, type: BIGINT, autoIncrement: true, constraints: { primaryKey: true, nullable: false } }
+              - column: { name: occurred_at, type: "${ts}", constraints: { nullable: false } }
+              - column: { name: actor, type: VARCHAR(255), constraints: { nullable: false } }
+              - column: { name: actor_type, type: VARCHAR(20), constraints: { nullable: false } }
+              - column: { name: action, type: VARCHAR(100), constraints: { nullable: false } }
+              - column: { name: target_type, type: VARCHAR(50) }
+              - column: { name: target_id, type: VARCHAR(255) }
+              - column: { name: tenant_slug, type: VARCHAR(64) }
+              - column: { name: details, type: VARCHAR(2000) }
+              - column: { name: ip, type: VARCHAR(64) }
+        - createIndex:
+            tableName: platform_audit_log
+            indexName: idx_audit_time
+            columns:
+              - column: { name: occurred_at }
+        - createIndex:
+            tableName: platform_audit_log
+            indexName: idx_audit_tenant
+            columns:
+              - column: { name: tenant_slug }
+
+  - changeSet:
+      id: 001-usage-daily
+      author: platform
+      changes:
+        - createTable:
+            tableName: platform_usage_daily
+            columns:
+              - column: { name: tenant_slug, type: VARCHAR(64), constraints: { primaryKey: true, primaryKeyName: pk_usage_daily, nullable: false } }
+              - column: { name: usage_day, type: DATE, constraints: { primaryKey: true, primaryKeyName: pk_usage_daily, nullable: false } }
+              - column: { name: messages, type: BIGINT, defaultValueNumeric: 0, constraints: { nullable: false } }
+              - column: { name: media_bytes, type: BIGINT, defaultValueNumeric: 0, constraints: { nullable: false } }
+              - column: { name: api_calls, type: BIGINT, defaultValueNumeric: 0, constraints: { nullable: false } }
