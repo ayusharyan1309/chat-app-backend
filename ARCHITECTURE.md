@@ -183,7 +183,28 @@ deployments can share one schema.
 - `PlatformIntegrationTest`: 11 end-to-end scenarios over real HTTP and STOMP.
 - `ClusterSmokeTest`: two live nodes.
 
-## 8. Adding a provider
+## 8. Performance baseline
+
+`LoadSmokeTest` ran against one node on a developer laptop, with PostgreSQL 16, Redis and the load
+generator (up to 100 STOMP sockets) **all on the same machine**. These are a floor for capacity
+planning, not a benchmark.
+
+| Offered load | Throughput | send→delivery p50 | p99 |
+|---|---|---|---|
+| ~1.25k msg/s (50 sockets) | 1.1k msg/s | 2.4 ms | 90 ms (cold JVM) |
+| ~2.5k msg/s (100 sockets) | 2.3k msg/s | 3.4 ms | 54 ms |
+| ~5k msg/s (100 sockets) | 3.9k msg/s (saturated) | queueing | queueing |
+
+Each accepted message costs one fresh membership read plus a single append transaction (four
+statements; three on PostgreSQL thanks to `RETURNING`). Hot reads (user status, block state,
+conversation identity, tenant snapshot) are served from short-lived local caches. Throughput
+scales out with nodes; the message store's write capacity then becomes the limit. Past that
+point, give large tenants dedicated stores or move to Cassandra/ScyllaDB.
+
+Sends from one socket are processed in receive order, so a sender's messages always get
+increasing seqs. Events to one socket are published in order.
+
+## 9. Adding a provider
 
 1. Implement the SPI (for example `MessageStore`) in a new package.
 2. Add a `@Component` implementing `ConnectorFactory<T>` with a descriptor and its config fields.
