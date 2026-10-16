@@ -29,7 +29,8 @@ export function useChartTheme(): ChartTheme {
       ink: read(styles, '--ink', '#18202f'),
       ink3: read(styles, '--ink-3', '#6f798d'),
     }
-    // Recompute when the theme attribute changes.
-    // eslint-disable-next-line react/exhaustive-deps
+    // The values come from the DOM (CSS custom properties switched by the theme attribute), so
+    // `theme` is the cache key even though the callback does not read it.
+    // oxlint-disable-next-line react/exhaustive-deps
   }, [theme])
 }

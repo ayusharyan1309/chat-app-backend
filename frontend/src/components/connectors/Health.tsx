@@ -29,6 +29,8 @@ export function DetailsList({ details }: { details: JsonObject | null | undefine
 export function TestResult({ result, title }: { result: HealthResult; title?: ReactNode }) {
   const Icon = result.healthy ? CircleCheck : CircleAlert
   return (
+    // A live status region with block content (<output> may only hold phrasing content).
+    // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
     <div className={cx('test-result', result.healthy ? 'is-ok' : 'is-down')} role="status">
       <div className="test-result__head">
         <Icon size={16} aria-hidden />

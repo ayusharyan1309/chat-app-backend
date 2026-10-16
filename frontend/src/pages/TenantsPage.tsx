@@ -12,15 +12,15 @@ import { Dialog } from '../components/ui/Dialog'
 import { Callout, EmptyState, LoadError } from '../components/ui/Feedback'
 import { Field, FormGrid, Input, SearchInput, Select } from '../components/ui/Form'
 import { DataTable, type Column } from '../components/ui/Table'
-import { useDebounced } from '../hooks/misc'
+import { useDebounced } from '../hooks/useDebounced'
 import { useApi } from '../hooks/useApi'
 import { formatCount, formatDate, pluralize, slugify } from '../lib/format'
+import { isEmail } from '../lib/validation'
 import { useAuth } from '../state/auth'
 import { TENANT_STATUSES, type CreateTenantResponse, type Plan, type TenantStatus, type TenantSummary } from '../types'
 import { toApiError } from '../api/http'
 
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 interface FormState {
   name: string
@@ -45,7 +45,7 @@ function NewTenantDialog({ open, onClose, plans, onCreated }: { open: boolean; o
   const errors = {
     name: !form.name.trim() ? 'Enter a name.' : undefined,
     slug: slug && !SLUG_PATTERN.test(slug) ? 'Use lowercase letters, numbers and hyphens (max 40).' : undefined,
-    contactEmail: !EMAIL_PATTERN.test(form.contactEmail.trim()) ? 'Enter a valid email address.' : undefined,
+    contactEmail: !isEmail(form.contactEmail) ? 'Enter a valid email address.' : undefined,
     trialDays: form.trialDays && !/^\d+$/.test(form.trialDays) ? 'Enter a whole number of days.' : undefined,
   }
   const invalid = Object.values(errors).some(Boolean)

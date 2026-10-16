@@ -1,9 +1,10 @@
 import { RefreshCw, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { errorMessage } from '../../api/http'
 import { Button, IconButton } from '../../components/ui/Button'
 import { Callout, Lamp, Spinner, type LampState } from '../../components/ui/Feedback'
 import { Avatar } from '../../components/ui/Misc'
+import { featureSet } from '../../lib/features'
 import { cx } from '../../lib/util'
 import type { TenantPublicConfig } from '../../types'
 import type { SessionStatus } from './chatEngine'
@@ -22,22 +23,27 @@ const STATUS: Record<SessionStatus, { lamp: LampState; label: string }> = {
   closed: { lamp: 'idle', label: 'Offline' },
 }
 
+const NO_TYPING: string[] = []
+
 interface PaneProps {
   tenant: string
   userId: string
   config: TenantPublicConfig
   suggestions: Suggestion[]
-  onClose: () => void
+  onClose: (userId: string) => void
   onIdentity: (s: Suggestion) => void
 }
 
 function PaneSession({ tenant, userId, config, suggestions, onClose, onIdentity, onRetry }: PaneProps & { onRetry: () => void }) {
-  const features = useMemo(() => new Set(config.features), [config.features])
-  const session = useChatSession(tenant, userId, config.features, config.settings)
+  const features = useMemo(() => featureSet(config.features), [config.features])
+  const session = useChatSession(tenant, userId, features, config.settings)
   const { state, me, status, fatal, notices, actions } = session
   const [newChat, setNewChat] = useState(false)
   const meId = me?.id ?? userId
-  const conversations = useMemo(() => sortedConversations(state), [state])
+
+  // Each memo depends only on the slice it reads, so typing sweeps, upload progress and other
+  // unrelated updates do not re-sort the inbox or rebuild lookups.
+  const conversations = useMemo(() => sortedConversations(state.conversations), [state.conversations])
   const archived = useMemo(() => Object.values(state.conversations).filter((c) => c.archived), [state.conversations])
   const active = state.activeId ? state.conversations[state.activeId] : undefined
   const pending = useMemo(
@@ -55,14 +61,22 @@ function PaneSession({ tenant, userId, config, suggestions, onClose, onIdentity,
     for (const t of Object.values(state.threads)) for (const p of t.participants ?? []) if (p.displayName) map.set(p.userId, p.displayName)
     return map
   }, [state.conversations, state.threads, suggestions])
-  const typingUsers = useMemo(() => Object.keys((state.activeId && state.typing[state.activeId]) || {}), [state.typing, state.activeId])
+  const nameOf = useCallback((id: string) => names.get(id) ?? id, [names])
+  const activeTyping = state.activeId ? state.typing[state.activeId] : undefined
+  const typingUsers = useMemo(() => (activeTyping ? Object.keys(activeTyping) : NO_TYPING), [activeTyping])
+  const peerPresence = active?.peer ? state.presence[active.peer.id] : undefined
+  const others = useMemo(() => suggestions.filter((s) => s.id !== meId), [suggestions, meId])
 
   useEffect(() => {
     if (me) onIdentity({ id: me.id, displayName: me.displayName || me.id })
   }, [me, onIdentity])
 
+  const openNewChat = useCallback(() => setNewChat(true), [])
+  const unarchive = useCallback((id: string) => actions.updateSettings(id, { archived: false }), [actions])
+  const quickChat = useCallback((id: string) => void actions.startDirect(id).catch((err: unknown) => actions.notify(errorMessage(err))), [actions])
+  const back = useCallback(() => actions.open(null), [actions])
+
   const meta = STATUS[status]
-  const others = suggestions.filter((s) => s.id !== meId)
 
   return (
     <article className="pane" aria-label={`Chat as ${me?.displayName ?? userId}`}>
@@ -74,7 +88,7 @@ function PaneSession({ tenant, userId, config, suggestions, onClose, onIdentity,
         </div>
         <Lamp state={meta.lamp} label={meta.label} />
         {status === 'reconnecting' ? <IconButton size="sm" label="Reconnect now" icon={<RefreshCw size={14} aria-hidden />} onClick={actions.reconnect} /> : null}
-        <IconButton size="sm" label="Close pane" icon={<X size={15} aria-hidden />} onClick={onClose} />
+        <IconButton size="sm" label="Close pane" icon={<X size={15} aria-hidden />} onClick={() => onClose(userId)} />
       </header>
 
       {notices.length > 0 ? (
@@ -105,7 +119,7 @@ function PaneSession({ tenant, userId, config, suggestions, onClose, onIdentity,
           <Inbox
             conversations={conversations}
             archived={archived}
-            onUnarchive={(id) => actions.updateSettings(id, { archived: false })}
+            onUnarchive={unarchive}
             loaded={state.inboxLoaded}
             hasMore={state.inboxHasMore}
             me={meId}
@@ -114,11 +128,11 @@ function PaneSession({ tenant, userId, config, suggestions, onClose, onIdentity,
             presence={state.presence}
             showPresence={features.has('presence')}
             suggestions={others}
-            onOpen={(id) => actions.open(id)}
-            onNew={() => setNewChat(true)}
-            onQuickChat={(id) => void actions.startDirect(id).catch((err: unknown) => actions.notify(errorMessage(err)))}
+            onOpen={actions.open}
+            onNew={openNewChat}
+            onQuickChat={quickChat}
             onLoadMore={actions.loadMoreInbox}
-            nameOf={(id) => names.get(id) ?? id}
+            nameOf={nameOf}
           />
           {active ? (
             <ConversationView
@@ -128,18 +142,18 @@ function PaneSession({ tenant, userId, config, suggestions, onClose, onIdentity,
               pending={pending}
               me={meId}
               typingUserIds={typingUsers}
-              presence={state.presence}
+              peerPresence={peerPresence}
               features={features}
               settings={config.settings}
               connected={status === 'open'}
               actions={actions}
-              onBack={() => actions.open(null)}
+              onBack={back}
               onNotice={actions.notify}
             />
           ) : (
             <div className="pane__placeholder">
               <p>Select a chat or start a new one.</p>
-              <Button size="sm" onClick={() => setNewChat(true)}>
+              <Button size="sm" onClick={openNewChat}>
                 New chat
               </Button>
             </div>

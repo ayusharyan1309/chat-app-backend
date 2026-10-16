@@ -1,8 +1,7 @@
 import { ChevronDown, ChevronRight, RefreshCw, ScrollText } from 'lucide-react'
-import { Fragment, useCallback, useEffect, useState } from 'react'
+import { Fragment, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { auditApi } from '../api/admin'
-import { toApiError, type ApiError } from '../api/http'
 import { tenantsApi } from '../api/tenants'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Button, IconButton } from '../components/ui/Button'
@@ -10,6 +9,7 @@ import { Card } from '../components/ui/Card'
 import { Badge, EmptyState, LoadError, Skeleton, type Tone } from '../components/ui/Feedback'
 import { Select } from '../components/ui/Form'
 import { useApi } from '../hooks/useApi'
+import { usePagedApi } from '../hooks/usePagedApi'
 import { formatDateTime, formatRelative } from '../lib/format'
 import { stringifyDetails } from '../lib/util'
 import type { AuditActorType, AuditEntry } from '../types'
@@ -25,52 +25,27 @@ function hasDetails(details: unknown): boolean {
   return true
 }
 
+const AUDIT_PAGING = {
+  pageSize: PAGE,
+  cursorOf: (entry: AuditEntry) => entry.id,
+  idOf: (entry: AuditEntry) => String(entry.id),
+}
+
 export function AuditPage() {
   const [tenant, setTenant] = useState('')
-  const [entries, setEntries] = useState<AuditEntry[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadingMore, setLoadingMore] = useState(false)
-  const [hasMore, setHasMore] = useState(false)
-  const [error, setError] = useState<ApiError | null>(null)
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const tenants = useApi(() => tenantsApi.list(), 'tenants:all')
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  const tenants = useApi((signal) => tenantsApi.list({}, { signal }), 'tenants:all')
+  // The key carries the filter, so a response or "load more" page for a previous filter is dropped.
+  const audit = usePagedApi(
+    (before, signal) => auditApi.list({ tenant: tenant || undefined, limit: PAGE, before }, { signal }),
+    `audit:${tenant}`,
+    AUDIT_PAGING,
+  )
+  const { items: entries, loading, loadingMore, hasMore, error } = audit
 
-  const load = useCallback(async (filter: string) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const page = await auditApi.list({ tenant: filter || undefined, limit: PAGE })
-      setEntries(page)
-      setHasMore(page.length >= PAGE)
-      setExpanded(new Set())
-    } catch (err) {
-      setError(toApiError(err))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    // oxlint-disable-next-line react/set-state-in-effect
-    void load(tenant)
-  }, [tenant, load])
-
-  const loadMore = async () => {
-    const last = entries[entries.length - 1]
-    if (!last) return
-    setLoadingMore(true)
-    try {
-      const page = await auditApi.list({ tenant: tenant || undefined, limit: PAGE, before: last.id })
-      setEntries((list) => {
-        const seen = new Set(list.map((e) => String(e.id)))
-        return [...list, ...page.filter((e) => !seen.has(String(e.id)))]
-      })
-      setHasMore(page.length >= PAGE)
-    } catch (err) {
-      setError(toApiError(err))
-    } finally {
-      setLoadingMore(false)
-    }
+  const changeTenant = (next: string) => {
+    setTenant(next)
+    setExpanded(new Set())
   }
 
   const toggle = (id: string) =>
@@ -85,7 +60,7 @@ export function AuditPage() {
     <>
       <PageHeader title="Audit log" description="Every change made by admins, API keys and the system, newest first." />
       <div className="toolbar">
-        <Select aria-label="Filter by tenant" value={tenant} onChange={(e) => setTenant(e.target.value)}>
+        <Select aria-label="Filter by tenant" value={tenant} onChange={(e) => changeTenant(e.target.value)}>
           <option value="">All tenants and platform</option>
           {(tenants.data ?? []).map((t) => (
             <option key={t.slug} value={t.slug}>
@@ -94,9 +69,9 @@ export function AuditPage() {
           ))}
         </Select>
         <div className="spacer" />
-        <IconButton label="Refresh" variant="secondary" icon={<RefreshCw size={15} aria-hidden />} onClick={() => void load(tenant)} />
+        <IconButton label="Refresh" variant="secondary" icon={<RefreshCw size={15} aria-hidden />} onClick={() => void audit.reload()} />
       </div>
-      {error ? <LoadError error={error} onRetry={() => void load(tenant)} /> : null}
+      {error ? <LoadError error={error} onRetry={() => void audit.reload()} /> : null}
       <Card flush>
         <div className="table-wrap">
           <table className="table audit-table">
@@ -202,7 +177,7 @@ export function AuditPage() {
               Showing {entries.length} {entries.length === 1 ? 'entry' : 'entries'}
             </span>
             {hasMore ? (
-              <Button size="sm" onClick={() => void loadMore()} loading={loadingMore}>
+              <Button size="sm" onClick={() => void audit.loadMore()} loading={loadingMore}>
                 Load older entries
               </Button>
             ) : (

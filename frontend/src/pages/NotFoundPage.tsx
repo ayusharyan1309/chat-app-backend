@@ -2,7 +2,7 @@ import { Compass } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { buttonClass } from '../components/ui/classes'
 import { EmptyState } from '../components/ui/Feedback'
-import { useDocumentTitle } from '../hooks/misc'
+import { useDocumentTitle } from '../hooks/useDocumentTitle'
 
 export function NotFoundPage() {
   useDocumentTitle('Not found')

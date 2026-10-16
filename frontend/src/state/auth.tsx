@@ -7,8 +7,9 @@ type AuthStatus = 'loading' | 'authenticated' | 'anonymous'
 
 interface AuthContextValue {
   status: AuthStatus
+  /** `null` while signed in but the profile could not be loaded yet (it is retried in the background). */
   admin: Admin | null
-  /** True for OWNER and ADMIN; VIEWER is read-only. */
+  /** True for OWNER and ADMIN. False for VIEWER and while the profile (and so the role) is unknown. */
   canWrite: boolean
   /** Set when the session ended because the backend returned 401. */
   expired: boolean
@@ -19,10 +20,14 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
+/** Back-off for re-fetching the profile after a non-401 failure (backend down, 5xx). */
+const PROFILE_RETRY_MS = [5_000, 15_000, 30_000, 60_000] as const
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [admin, setAdmin] = useState<Admin | null>(null)
   const [status, setStatus] = useState<AuthStatus>(() => (adminSession.getToken() ? 'loading' : 'anonymous'))
   const [expired, setExpired] = useState(false)
+  const [profileAttempt, setProfileAttempt] = useState(0)
 
   const refresh = useCallback(async () => {
     if (!adminSession.getToken()) {
@@ -36,7 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStatus('authenticated')
     } catch {
       // 401 is handled by the unauthorized listener; any other failure (backend down) keeps the
-      // token so the console recovers once the backend is reachable again.
+      // token so the console recovers once the backend is reachable again (see the retry below).
       if (adminSession.getToken()) {
         setStatus('authenticated')
       } else {
@@ -46,11 +51,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // Initial profile load when a stored token exists (state changes only after `/me` answers).
   useEffect(() => {
-    if (status === 'loading') void refresh()
-    // Only on first mount.
-    // eslint-disable-next-line react/exhaustive-deps
-  }, [])
+    // oxlint-disable-next-line react/set-state-in-effect
+    if (adminSession.getToken()) void refresh()
+  }, [refresh])
+
+  // Signed in without a profile: the role is unknown, so writes stay disabled; keep retrying.
+  useEffect(() => {
+    if (status !== 'authenticated' || admin) return
+    const delay = PROFILE_RETRY_MS[Math.min(profileAttempt, PROFILE_RETRY_MS.length - 1)]
+    const timer = window.setTimeout(() => {
+      setProfileAttempt((n) => n + 1)
+      void refresh()
+    }, delay)
+    return () => window.clearTimeout(timer)
+  }, [status, admin, profileAttempt, refresh])
 
   useEffect(
     () =>
@@ -67,6 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     adminSession.set(res.token, res.expiresAt)
     setAdmin(res.admin)
     setExpired(false)
+    setProfileAttempt(0)
     setStatus('authenticated')
   }, [])
 
@@ -74,6 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     adminSession.clear()
     setAdmin(null)
     setExpired(false)
+    setProfileAttempt(0)
     setStatus('anonymous')
   }, [])
 
@@ -81,7 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       status,
       admin,
-      canWrite: admin ? admin.role !== 'VIEWER' : true,
+      canWrite: admin !== null && admin.role !== 'VIEWER',
       expired,
       login,
       logout,
@@ -93,7 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
-// eslint-disable-next-line react/only-export-components
+// oxlint-disable-next-line react/only-export-components
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error('useAuth must be used inside AuthProvider')

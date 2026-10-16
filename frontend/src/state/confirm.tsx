@@ -125,7 +125,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   )
 }
 
-// eslint-disable-next-line react/only-export-components
+// oxlint-disable-next-line react/only-export-components
 export function useConfirm(): ConfirmFn {
   const ctx = useContext(ConfirmContext)
   if (!ctx) throw new Error('useConfirm must be used inside ConfirmProvider')

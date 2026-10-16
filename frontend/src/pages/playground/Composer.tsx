@@ -54,7 +54,6 @@ export function Composer({
   useEffect(() => {
     if (editing && editingId.current !== editing.id) {
       editingId.current = editing.id
-      // oxlint-disable-next-line react/set-state-in-effect
       setText(editing.content ?? '')
       areaRef.current?.focus()
     } else if (!editing && editingId.current) {

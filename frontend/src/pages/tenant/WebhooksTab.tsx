@@ -11,12 +11,13 @@ import { Checkbox, Field, Input, Textarea, Toggle } from '../../components/ui/Fo
 import { DataTable, type Column } from '../../components/ui/Table'
 import { useAction } from '../../hooks/useAction'
 import { useApi } from '../../hooks/useApi'
+import { featureEnabled } from '../../lib/features'
 import { formatDateTime, formatLatency, formatRelative } from '../../lib/format'
 import { cx } from '../../lib/util'
 import { useConfirm } from '../../state/confirm'
 import { useToast } from '../../state/toast'
 import { WEBHOOK_EVENTS, type DeliveryStatus, type Webhook, type WebhookDelivery, type WebhookInput } from '../../types'
-import { featureEnabled, tenantPath, type TenantTabProps } from './types'
+import { tenantPath, type TenantTabProps } from './tenantTab'
 
 const DELIVERY_TONE: Record<DeliveryStatus, Tone> = { SUCCESS: 'ok', FAILED: 'danger', PENDING: 'warn' }
 const DELIVERY_LABEL: Record<DeliveryStatus, string> = { SUCCESS: 'Delivered', FAILED: 'Failed', PENDING: 'Retrying' }
@@ -178,7 +179,21 @@ export function WebhooksTab({ tenant, canWrite }: TenantTabProps) {
   const [editing, setEditing] = useState<Webhook | 'new' | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [deliveriesKey, setDeliveriesKey] = useState(0)
-  const [testing, setTesting] = useState<string | null>(null)
+  const [testingId, setTestingId] = useState<string | null>(null)
+  const sendTest = useAction(
+    async (hook: Webhook) => {
+      const delivery = await webhooksApi.test(tenant.slug, hook.id)
+      if (delivery.status === 'SUCCESS') {
+        toast.success('Test event delivered', `${hook.url} answered ${delivery.responseCode ?? ''} in ${formatLatency(delivery.durationMs)}`)
+      } else {
+        toast.error('Test event was not delivered', delivery.error ?? `Status ${delivery.status}${delivery.responseCode ? `, HTTP ${delivery.responseCode}` : ''}`)
+      }
+      setSelectedId(hook.id)
+      setDeliveriesKey((k) => k + 1)
+      return delivery
+    },
+    { errorTitle: 'Could not send the test event' },
+  )
 
   if (!enabled) {
     return (
@@ -197,19 +212,9 @@ export function WebhooksTab({ tenant, canWrite }: TenantTabProps) {
 
   const selected = hooks.data?.find((h) => h.id === selectedId) ?? hooks.data?.[0] ?? null
 
-  const sendTest = async (hook: Webhook) => {
-    setTesting(hook.id)
-    try {
-      const delivery = await webhooksApi.test(tenant.slug, hook.id)
-      if (delivery.status === 'SUCCESS') toast.success('Test event delivered', `${hook.url} answered ${delivery.responseCode ?? ''} in ${formatLatency(delivery.durationMs)}`)
-      else toast.error(delivery.error ?? `Status ${delivery.status}${delivery.responseCode ? `, HTTP ${delivery.responseCode}` : ''}`, 'Test event was not delivered')
-      setSelectedId(hook.id)
-      setDeliveriesKey((k) => k + 1)
-    } catch (err) {
-      toast.error(err, 'Could not send the test event')
-    } finally {
-      setTesting(null)
-    }
+  const test = (hook: Webhook) => {
+    setTestingId(hook.id)
+    void sendTest.run(hook)
   }
 
   const remove = (hook: Webhook) =>
@@ -269,7 +274,7 @@ export function WebhooksTab({ tenant, canWrite }: TenantTabProps) {
                 </span>
               </button>
               <div className="webhook-row__actions">
-                <Button size="sm" icon={<Send size={13} aria-hidden />} onClick={() => void sendTest(hook)} loading={testing === hook.id} disabled={!canWrite}>
+                <Button size="sm" icon={<Send size={13} aria-hidden />} onClick={() => test(hook)} loading={sendTest.busy && testingId === hook.id} disabled={!canWrite || sendTest.busy}>
                   Send test
                 </Button>
                 <IconButton size="sm" label="Edit webhook" icon={<Pencil size={14} aria-hidden />} onClick={() => setEditing(hook)} disabled={!canWrite} />

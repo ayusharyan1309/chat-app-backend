@@ -10,12 +10,12 @@ import { Badge, Callout, EmptyState, LoadError } from '../../components/ui/Feedb
 import { Field, FormGrid, Input, SearchInput } from '../../components/ui/Form'
 import { Avatar, Pagination } from '../../components/ui/Misc'
 import { DataTable, type Column } from '../../components/ui/Table'
-import { useDebounced } from '../../hooks/misc'
+import { useDebounced } from '../../hooks/useDebounced'
 import { useAction } from '../../hooks/useAction'
 import { useApi } from '../../hooks/useApi'
 import { formatDate, formatRelative } from '../../lib/format'
 import type { UpsertUserRequest, User } from '../../types'
-import { playgroundLink, type TenantTabProps } from './types'
+import { playgroundLink, type TenantTabProps } from './tenantTab'
 
 const PAGE = 50
 

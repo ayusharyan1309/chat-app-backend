@@ -9,6 +9,28 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    build: {
+      rolldownOptions: {
+        output: {
+          // Named vendor chunks (instead of whichever module happened to be shared first) so
+          // bundle reports and cache invalidation are readable. `codeSplitting` supersedes the
+          // deprecated `advancedChunks` / `manualChunks` in Vite 8 (Rolldown).
+          codeSplitting: {
+            groups: [
+              { name: 'react', test: /node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/, priority: 40 },
+              {
+                name: 'charts',
+                test: /node_modules[\\/](recharts|victory-vendor|d3-[^\\/]+|internmap|decimal\.js-light|eventemitter3|es-toolkit|immer|reselect|redux|redux-thunk|@reduxjs[\\/]toolkit|react-redux|react-is|tiny-invariant|use-sync-external-store|clsx)[\\/]/,
+                priority: 30,
+              },
+              { name: 'stomp', test: /node_modules[\\/]@stomp[\\/]/, priority: 30 },
+              { name: 'icons', test: /node_modules[\\/]lucide-react[\\/]/, priority: 30 },
+              { name: 'vendor', test: /node_modules[\\/]/, priority: 10 },
+            ],
+          },
+        },
+      },
+    },
     server: {
       port: 5173,
       // Same-origin in development: the browser talks to Vite, Vite forwards to the backend.

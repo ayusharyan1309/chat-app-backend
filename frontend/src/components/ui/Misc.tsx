@@ -1,8 +1,8 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { formatNumber, hueFor, initials } from '../../lib/format'
+import { safeMediaUrl } from '../../lib/mediaUrl'
 import { cx } from '../../lib/util'
-import { resolveBackendUrl } from '../../lib/config'
 import { IconButton } from './Button'
 
 /* -------------------------------------------------------------- Segmented ---- */
@@ -55,6 +55,8 @@ export function Segmented<T extends string>({
               refs.current[index] = el
             }}
             type="button"
+            // ARIA radio group with roving tabindex (WAI-ARIA APG); native radios cannot be styled as segments.
+            // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
             role="radio"
             aria-checked={checked}
             tabIndex={checked ? 0 : -1}
@@ -89,16 +91,18 @@ export function Avatar({
   online?: boolean | null
   className?: string
 }) {
-  const [failed, setFailed] = useState(false)
+  // Tenant-supplied: only http(s) or relative URLs are loaded; anything else shows initials.
+  const url = safeMediaUrl(src)
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
   const hue = hueFor(id)
-  const showImage = src && !failed
+  const showImage = url !== null && failedUrl !== url
   return (
     <span
       className={cx('avatar', className)}
       style={{ width: size, height: size, fontSize: Math.max(10, Math.round(size * 0.38)), ['--avatar-hue' as string]: hue }}
       aria-hidden
     >
-      {showImage ? <img src={resolveBackendUrl(src)} alt="" onError={() => setFailed(true)} /> : <span className="avatar__initials">{initials(name || id)}</span>}
+      {showImage ? <img src={url} alt="" onError={() => setFailedUrl(url)} /> : <span className="avatar__initials">{initials(name || id)}</span>}
       {online !== undefined && online !== null ? <span className={cx('avatar__presence', online && 'is-online')} /> : null}
     </span>
   )
@@ -113,21 +117,47 @@ export interface MenuItem {
   onSelect: () => void
   danger?: boolean
   disabled?: boolean
+  /** Accessible name when the label alone is not descriptive (e.g. a bare emoji). */
+  ariaLabel?: string
 }
 
-/** Small dropdown menu: click or keyboard to open, arrows to move, Escape to close. */
+export interface MenuTriggerProps {
+  onClick: () => void
+  'aria-expanded': boolean
+  'aria-haspopup': 'menu'
+  'aria-controls': string
+  id: string
+}
+
+/**
+ * Small dropdown menu: click or keyboard to open, arrow keys to move, Escape (focus returns to the
+ * trigger), Tab or a click outside to close.
+ */
 export function Menu({
   trigger,
   items,
   align = 'end',
   label,
   header,
+  orientation = 'vertical',
+  className,
+  listClassName,
+  itemClassName,
+  onOpenChange,
 }: {
-  trigger: (props: { onClick: () => void; 'aria-expanded': boolean; 'aria-haspopup': 'menu'; 'aria-controls': string; id: string }) => ReactNode
+  trigger: (props: MenuTriggerProps) => ReactNode
   items: MenuItem[]
   align?: 'start' | 'end'
   label: string
   header?: ReactNode
+  /** Horizontal menus (e.g. a row of reactions) move with Left/Right as well. */
+  orientation?: 'vertical' | 'horizontal'
+  className?: string
+  /** Replaces the default list styling. */
+  listClassName?: string
+  /** Replaces the default item styling. */
+  itemClassName?: string
+  onOpenChange?: (open: boolean) => void
 }) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -135,39 +165,58 @@ export function Menu({
   const id = useId()
 
   useEffect(() => {
+    onOpenChange?.(open)
+  }, [open, onOpenChange])
+
+  useEffect(() => {
     if (!open) return
-    const onDown = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+    const onDown = (e: PointerEvent) => {
+      if (wrapRef.current && e.target instanceof Node && !wrapRef.current.contains(e.target)) setOpen(false)
     }
-    document.addEventListener('mousedown', onDown)
+    document.addEventListener('pointerdown', onDown)
     const first = listRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
     first?.focus()
-    return () => document.removeEventListener('mousedown', onDown)
+    return () => document.removeEventListener('pointerdown', onDown)
   }, [open])
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const buttons = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])
-    const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
+    const index = buttons.findIndex((b) => b === document.activeElement)
+    const next = orientation === 'horizontal' ? ['ArrowDown', 'ArrowRight'] : ['ArrowDown']
+    const prev = orientation === 'horizontal' ? ['ArrowUp', 'ArrowLeft'] : ['ArrowUp']
     if (event.key === 'Escape') {
       event.preventDefault()
+      event.stopPropagation()
       setOpen(false)
       wrapRef.current?.querySelector<HTMLButtonElement>(`[aria-controls="${id}"]`)?.focus()
-    } else if (event.key === 'ArrowDown') {
+    } else if (next.includes(event.key)) {
       event.preventDefault()
       buttons[(index + 1) % buttons.length]?.focus()
-    } else if (event.key === 'ArrowUp') {
+    } else if (prev.includes(event.key)) {
       event.preventDefault()
       buttons[(index - 1 + buttons.length) % buttons.length]?.focus()
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault()
+      buttons[event.key === 'Home' ? 0 : buttons.length - 1]?.focus()
     } else if (event.key === 'Tab') {
       setOpen(false)
     }
   }
 
   return (
-    <div className="menu" ref={wrapRef}>
-      {trigger({ onClick: () => setOpen((o) => !o), 'aria-expanded': open, 'aria-haspopup': 'menu', 'aria-controls': id, id: `${id}-trigger` })}
+    <div className={cx('menu', className)} ref={wrapRef}>
+      {trigger({ onClick: () => setOpen(!open), 'aria-expanded': open, 'aria-haspopup': 'menu', 'aria-controls': id, id: `${id}-trigger` })}
       {open ? (
-        <div className={cx('menu__list', `menu__list--${align}`)} role="menu" id={id} aria-label={label} ref={listRef} onKeyDown={onKeyDown}>
+        <div
+          className={listClassName ?? cx('menu__list', `menu__list--${align}`)}
+          role="menu"
+          id={id}
+          aria-label={label}
+          aria-orientation={orientation}
+          tabIndex={-1}
+          ref={listRef}
+          onKeyDown={onKeyDown}
+        >
           {header ? <div className="menu__header">{header}</div> : null}
           {items.map((item) => (
             <button
@@ -175,7 +224,8 @@ export function Menu({
               type="button"
               role="menuitem"
               disabled={item.disabled}
-              className={cx('menu__item', item.danger && 'is-danger')}
+              aria-label={item.ariaLabel}
+              className={itemClassName ?? cx('menu__item', item.danger && 'is-danger')}
               onClick={() => {
                 setOpen(false)
                 item.onSelect()

@@ -32,10 +32,11 @@ interface Snapshot<T> {
 
 /**
  * Minimal data-loading hook. `key` identifies the request; when it changes the fetcher runs again.
- * Pass `null` to skip. Responses for an outdated key are discarded, and loading/data are derived from
- * the key so nothing has to be reset inside an effect.
+ * Pass `null` to skip. Responses for an outdated key are discarded (and their requests aborted via
+ * the `signal` handed to the fetcher), and loading/data are derived from the key so nothing has to
+ * be reset inside an effect.
  */
-export function useApi<T>(fetcher: () => Promise<T>, key: string | null, options: Options = {}): ApiState<T> {
+export function useApi<T>(fetcher: (signal: AbortSignal) => Promise<T>, key: string | null, options: Options = {}): ApiState<T> {
   const { intervalMs, keepPrevious = false, pauseWhenHidden = true } = options
   const [snap, setSnap] = useState<Snapshot<T>>({ key: null, data: undefined, error: null, settled: null })
   const [inflight, setInflight] = useState(0)
@@ -43,6 +44,7 @@ export function useApi<T>(fetcher: () => Promise<T>, key: string | null, options
   const keyRef = useRef(key)
   const keepPreviousRef = useRef(keepPrevious)
   const seqRef = useRef(0)
+  const controllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     fetcherRef.current = fetcher
@@ -52,9 +54,13 @@ export function useApi<T>(fetcher: () => Promise<T>, key: string | null, options
 
   const run = useCallback(async (forKey: string) => {
     const seq = ++seqRef.current
+    // Only the newest request can win the seq guard, so an older one still in flight is wasted work.
+    controllerRef.current?.abort()
+    const controller = new AbortController()
+    controllerRef.current = controller
     setInflight((n) => n + 1)
     try {
-      const result = await fetcherRef.current()
+      const result = await fetcherRef.current(controller.signal)
       if (seq !== seqRef.current || keyRef.current !== forKey) return
       setSnap({ key: forKey, data: result, error: null, settled: forKey })
     } catch (err) {
@@ -62,6 +68,7 @@ export function useApi<T>(fetcher: () => Promise<T>, key: string | null, options
       const error = toApiError(err)
       setSnap((prev) => ({ key: forKey, data: prev.key === forKey || keepPreviousRef.current ? prev.data : undefined, error, settled: forKey }))
     } finally {
+      if (controllerRef.current === controller) controllerRef.current = null
       setInflight((n) => Math.max(0, n - 1))
     }
   }, [])
@@ -69,13 +76,17 @@ export function useApi<T>(fetcher: () => Promise<T>, key: string | null, options
   useEffect(() => {
     if (key === null) {
       seqRef.current += 1
+      controllerRef.current?.abort()
       return
     }
     keyRef.current = key
-    // Fetching on key change is the purpose of this effect; results are applied asynchronously.
+    // Fetching on key change is the purpose of this effect: `run` only bumps the in-flight counter
+    // synchronously, the result is applied after the request resolves.
     // oxlint-disable-next-line react/set-state-in-effect
     void run(key)
   }, [key, run])
+
+  useEffect(() => () => controllerRef.current?.abort(), [])
 
   useEffect(() => {
     if (!intervalMs || key === null) return

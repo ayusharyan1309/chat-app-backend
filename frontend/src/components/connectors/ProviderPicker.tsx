@@ -59,6 +59,8 @@ export function ProviderPicker({
               refs.current[index] = el
             }}
             type="button"
+            // ARIA radio group with roving tabindex (WAI-ARIA APG): each option is a rich card.
+            // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
             role="radio"
             aria-checked={selected}
             tabIndex={selected || (selectedIndex === -1 && index === 0) ? 0 : -1}

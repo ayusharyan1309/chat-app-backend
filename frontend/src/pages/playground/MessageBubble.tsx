@@ -1,7 +1,9 @@
 import { AlertCircle, Check, CheckCheck, Clock, CornerUpLeft, Download, FileText, Pencil, RotateCcw, SmilePlus, Trash2, X } from 'lucide-react'
-import { useState } from 'react'
-import { resolveBackendUrl } from '../../lib/config'
+import { memo, useState } from 'react'
+import { Menu, type MenuItem } from '../../components/ui/Misc'
+import { useBeforeDeadline } from '../../hooks/useNow'
 import { formatBytes, formatTime } from '../../lib/format'
+import { safeMediaUrl } from '../../lib/mediaUrl'
 import { cx } from '../../lib/util'
 import type { Attachment, Message, MessageType } from '../../types'
 import { previewOf, type PendingMessage, type TickState } from './chatState'
@@ -19,14 +21,18 @@ const TICK_LABEL: Record<TickState, string> = {
 export function Ticks({ state }: { state: TickState }) {
   const Icon = state === 'pending' ? Clock : state === 'failed' ? AlertCircle : state === 'sent' ? Check : CheckCheck
   return (
-    <span className={cx('ticks', `ticks--${state}`)} title={TICK_LABEL[state]} aria-label={TICK_LABEL[state]} role="img">
+    <span className={cx('ticks', `ticks--${state}`)} title={TICK_LABEL[state]}>
       <Icon size={state === 'pending' ? 12 : 15} strokeWidth={state === 'pending' ? 2 : 2.25} aria-hidden />
+      <span className="sr-only">{TICK_LABEL[state]}</span>
     </span>
   )
 }
 
 function AttachmentView({ type, attachment, localPreviewUrl, fileName, fileSize }: { type: MessageType; attachment: Attachment | null; localPreviewUrl?: string | null; fileName?: string | null; fileSize?: number | null }) {
-  const url = attachment?.url ? resolveBackendUrl(attachment.url) : null
+  // Only the backend's signed media endpoint is rendered or linked. Anything else (another host,
+  // `javascript:`, `data:`) is shown as plain text. `localPreviewUrl` is a blob: URL this tab made.
+  const url = safeMediaUrl(attachment?.url, 'attachment')
+  const blocked = Boolean(attachment?.url) && url === null
   const src = localPreviewUrl ?? url
   const name = attachment?.fileName ?? fileName ?? 'attachment'
   const size = attachment?.size ?? fileSize ?? null
@@ -40,14 +46,18 @@ function AttachmentView({ type, attachment, localPreviewUrl, fileName, fileSize 
       <span className="msg__media">{img}</span>
     )
   }
-  if (type === 'VIDEO' && src) return <video className="msg__video" src={src} controls preload="metadata" />
-  if (type === 'AUDIO' && url) return <audio className="msg__audio" src={url} controls preload="none" />
+  // User-uploaded chat media has no caption tracks to offer; the file name is the accessible name.
+  // oxlint-disable-next-line jsx-a11y/media-has-caption
+  if (type === 'VIDEO' && src) return <video className="msg__video" src={src} controls preload="metadata" aria-label={name} />
+  // oxlint-disable-next-line jsx-a11y/media-has-caption
+  if (type === 'AUDIO' && url) return <audio className="msg__audio" src={url} controls preload="none" aria-label={name} />
   return (
     <span className="msg__file">
       <FileText size={20} aria-hidden />
       <span className="msg__file-text">
         <span className="msg__file-name">{name}</span>
         {size !== null ? <span className="msg__file-size">{formatBytes(size)}</span> : null}
+        {blocked ? <span className="msg__file-size">Not served by this backend, so it is not linked.</span> : null}
       </span>
       {url ? (
         <a href={url} target="_blank" rel="noreferrer" className="msg__file-dl" aria-label={`Download ${name}`} download>
@@ -67,11 +77,17 @@ function ReplyQuote({ quoted, senderName, onJump }: { quoted: Message | null; se
   )
 }
 
-export interface BubbleCapabilities {
+/** What the viewer may do in this conversation; built once per conversation view, not per bubble. */
+export interface BubblePermissions {
   reply: boolean
   react: boolean
-  edit: boolean
-  delete: boolean
+  /** Own text messages may be edited for this long after sending; 0 = editing off. */
+  editWindowMs: number
+  deleteOwn: boolean
+  /** Group admins may delete anyone's message. */
+  deleteOthers: boolean
+  /** Show delivered/read ticks (`read-receipts`); otherwise own messages only show "sent". */
+  receipts: boolean
 }
 
 export interface MessageBubbleProps {
@@ -85,16 +101,17 @@ export interface MessageBubbleProps {
   tick: TickState | null
   quoted: Message | null
   quotedSenderName: string | null
-  capabilities: BubbleCapabilities
-  onReply: () => void
-  onReact: (emoji: string) => void
-  onEdit: () => void
-  onDelete: () => void
+  permissions: BubblePermissions
+  /** Handlers receive the message so one stable callback serves every bubble. */
+  onReply: (message: Message) => void
+  onReact: (message: Message, emoji: string) => void
+  onEdit: (message: Message) => void
+  onDelete: (message: Message) => void
   onJumpTo?: (id: string) => void
   highlighted?: boolean
 }
 
-export function MessageBubble({
+function MessageBubbleImpl({
   message,
   own,
   me,
@@ -104,7 +121,7 @@ export function MessageBubble({
   tick,
   quoted,
   quotedSenderName,
-  capabilities,
+  permissions,
   onReply,
   onReact,
   onEdit,
@@ -112,25 +129,31 @@ export function MessageBubble({
   onJumpTo,
   highlighted,
 }: MessageBubbleProps) {
-  const [picker, setPicker] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const editable = own && message.type === 'TEXT' && !message.deleted && permissions.editWindowMs > 0
+  // One timer per recently sent own message hides "Edit" when the window closes; none otherwise.
+  const canEdit = useBeforeDeadline(editable ? Date.parse(message.createdAt) + permissions.editWindowMs : null)
 
   if (message.type === 'SYSTEM') {
     return (
-      <div className="msg-system" id={`msg-${message.id}`}>
+      <div className="msg-system" data-msg-id={message.id}>
         <span>{message.content}</span>
       </div>
     )
   }
 
+  const canDelete = own ? permissions.deleteOwn : permissions.deleteOthers
   const reactions = Object.entries(message.reactions ?? {}).filter(([, users]) => users.length > 0)
-  const hasActions = !message.deleted && (capabilities.reply || capabilities.react || capabilities.edit || capabilities.delete)
+  const hasActions = !message.deleted && (permissions.reply || permissions.react || canEdit || canDelete)
+  const reactionItems: MenuItem[] = QUICK_REACTIONS.map((emoji) => ({
+    key: emoji,
+    label: emoji,
+    ariaLabel: `React with ${emoji}`,
+    onSelect: () => onReact(message, emoji),
+  }))
 
   return (
-    <div
-      className={cx('msg', own ? 'msg--out' : 'msg--in', firstInRun && 'is-first', highlighted && 'is-highlighted')}
-      id={`msg-${message.id}`}
-      data-seq={message.seq}
-    >
+    <div className={cx('msg', own ? 'msg--out' : 'msg--in', firstInRun && 'is-first', highlighted && 'is-highlighted')} data-msg-id={message.id} data-seq={message.seq}>
       <div className="msg__bubble">
         {showSender && senderName ? <span className="msg__sender">{senderName}</span> : null}
         {message.deleted ? (
@@ -159,8 +182,8 @@ export function MessageBubble({
                 key={emoji}
                 type="button"
                 className={cx('reaction', mine && 'is-mine')}
-                onClick={() => onReact(emoji)}
-                disabled={!capabilities.react}
+                onClick={() => onReact(message, emoji)}
+                disabled={!permissions.react}
                 title={users.join(', ')}
                 aria-label={`${emoji} ${users.length}${mine ? ', including you' : ''}`}
               >
@@ -173,47 +196,35 @@ export function MessageBubble({
       ) : null}
 
       {hasActions ? (
-        <div className={cx('msg__actions', picker && 'is-open')}>
-          {capabilities.reply ? (
-            <button type="button" className="msg__action" onClick={onReply} aria-label="Reply" title="Reply">
+        <div className={cx('msg__actions', pickerOpen && 'is-open')}>
+          {permissions.reply ? (
+            <button type="button" className="msg__action" onClick={() => onReply(message)} aria-label="Reply" title="Reply">
               <CornerUpLeft size={14} aria-hidden />
             </button>
           ) : null}
-          {capabilities.react ? (
-            <span className="msg__react">
-              <button type="button" className="msg__action" onClick={() => setPicker((p) => !p)} aria-label="React" aria-expanded={picker} title="React">
-                <SmilePlus size={14} aria-hidden />
-              </button>
-              {picker ? (
-                <span className="emoji-picker" role="menu" aria-label="Reactions">
-                  {QUICK_REACTIONS.map((emoji) => (
-                    <button
-                      key={emoji}
-                      type="button"
-                      role="menuitem"
-                      className="emoji-picker__item"
-                      onClick={() => {
-                        setPicker(false)
-                        onReact(emoji)
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape') setPicker(false)
-                      }}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </span>
-              ) : null}
-            </span>
+          {permissions.react ? (
+            <Menu
+              label="Reactions"
+              orientation="horizontal"
+              className="msg__react"
+              listClassName="emoji-picker"
+              itemClassName="emoji-picker__item"
+              onOpenChange={setPickerOpen}
+              items={reactionItems}
+              trigger={(props) => (
+                <button type="button" className="msg__action" aria-label="React" title="React" {...props}>
+                  <SmilePlus size={14} aria-hidden />
+                </button>
+              )}
+            />
           ) : null}
-          {capabilities.edit ? (
-            <button type="button" className="msg__action" onClick={onEdit} aria-label="Edit" title="Edit">
+          {canEdit ? (
+            <button type="button" className="msg__action" onClick={() => onEdit(message)} aria-label="Edit" title="Edit">
               <Pencil size={14} aria-hidden />
             </button>
           ) : null}
-          {capabilities.delete ? (
-            <button type="button" className="msg__action msg__action--danger" onClick={onDelete} aria-label="Delete for everyone" title="Delete for everyone">
+          {canDelete ? (
+            <button type="button" className="msg__action msg__action--danger" onClick={() => onDelete(message)} aria-label="Delete for everyone" title="Delete for everyone">
               <Trash2 size={14} aria-hidden />
             </button>
           ) : null}
@@ -223,9 +234,21 @@ export function MessageBubble({
   )
 }
 
+/** Memoised: with stable handlers, a new message or receipt re-renders only the bubbles it affects. */
+export const MessageBubble = memo(MessageBubbleImpl)
+
+export interface PendingBubbleProps {
+  pending: PendingMessage
+  quoted: Message | null
+  quotedSenderName: string | null
+  onRetry: (clientMsgId: string) => void
+  onDiscard: (clientMsgId: string) => void
+}
+
 /** Optimistic bubble for a message the server has not acknowledged yet. */
-export function PendingBubble({ pending, quoted, quotedSenderName, onRetry, onDiscard }: { pending: PendingMessage; quoted: Message | null; quotedSenderName: string | null; onRetry: () => void; onDiscard: () => void }) {
+function PendingBubbleImpl({ pending, quoted, quotedSenderName, onRetry, onDiscard }: PendingBubbleProps) {
   const failed = pending.status === 'failed'
+  const percent = Math.round((pending.progress ?? 0) * 100)
   return (
     <div className={cx('msg', 'msg--out', 'is-first', 'is-pending', failed && 'is-failed')}>
       <div className="msg__bubble">
@@ -234,11 +257,7 @@ export function PendingBubble({ pending, quoted, quotedSenderName, onRetry, onDi
           <AttachmentView type={pending.type} attachment={pending.attachment} localPreviewUrl={pending.localPreviewUrl} fileName={pending.fileName} fileSize={pending.fileSize} />
         ) : null}
         {pending.content ? <span className="msg__text">{pending.content}</span> : null}
-        {pending.status === 'uploading' ? (
-          <span className="msg__progress" role="progressbar" aria-label="Upload progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((pending.progress ?? 0) * 100)}>
-            <span style={{ width: `${Math.round((pending.progress ?? 0) * 100)}%` }} />
-          </span>
-        ) : null}
+        {pending.status === 'uploading' ? <progress className="msg__progress" aria-label="Upload progress" max={100} value={percent} /> : null}
         <span className="msg__meta">
           <time dateTime={pending.createdAt}>{formatTime(pending.createdAt)}</time>
           <Ticks state={failed ? 'failed' : 'pending'} />
@@ -247,10 +266,10 @@ export function PendingBubble({ pending, quoted, quotedSenderName, onRetry, onDi
       {failed ? (
         <div className="msg__failure" role="alert">
           <span>{pending.error ?? 'Not sent.'}</span>
-          <button type="button" className="msg__failure-btn" onClick={onRetry}>
+          <button type="button" className="msg__failure-btn" onClick={() => onRetry(pending.clientMsgId)}>
             <RotateCcw size={12} aria-hidden /> Retry
           </button>
-          <button type="button" className="msg__failure-btn" onClick={onDiscard} aria-label="Discard message">
+          <button type="button" className="msg__failure-btn" onClick={() => onDiscard(pending.clientMsgId)} aria-label="Discard message">
             <X size={12} aria-hidden />
           </button>
         </div>
@@ -258,3 +277,5 @@ export function PendingBubble({ pending, quoted, quotedSenderName, onRetry, onDi
     </div>
   )
 }
+
+export const PendingBubble = memo(PendingBubbleImpl)

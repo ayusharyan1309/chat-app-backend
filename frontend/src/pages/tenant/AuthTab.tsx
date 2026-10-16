@@ -10,8 +10,9 @@ import { Segmented } from '../../components/ui/Misc'
 import { SaveBar } from '../../components/ui/SaveBar'
 import { useAction } from '../../hooks/useAction'
 import { useApi } from '../../hooks/useApi'
+import { featureEnabled } from '../../lib/features'
 import type { ConnectorField, ConnectorSettings, ExternalAuthConfig, ExternalAuthType, TenantAuthConfig } from '../../types'
-import { featureEnabled, tenantPath, type TenantTabProps } from './types'
+import { tenantPath, type TenantTabProps } from './tenantTab'
 
 function field(key: string, label: string, type: ConnectorField['type'], extra: Partial<ConnectorField> = {}): ConnectorField {
   return { key, label, type, required: false, defaultValue: null, description: null, placeholder: null, options: null, ...extra }

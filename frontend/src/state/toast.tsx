@@ -1,21 +1,14 @@
 import { CircleAlert, CircleCheck, Info, X } from 'lucide-react'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { errorMessage } from '../api/http'
+import { createToastApi, type ToastApi, type ToastTone } from './toastApi'
 
-export type ToastTone = 'success' | 'error' | 'info'
+export type { ToastApi, ToastTone } from './toastApi'
 
 interface ToastItem {
   id: number
   tone: ToastTone
   title: string
   description?: string
-}
-
-interface ToastApi {
-  success: (title: string, description?: string) => void
-  info: (title: string, description?: string) => void
-  /** Accepts any thrown value; shows the backend `message` when available. */
-  error: (errOrTitle: unknown, title?: string) => void
 }
 
 const ToastContext = createContext<ToastApi | null>(null)
@@ -59,14 +52,16 @@ function ToastView({ item, onDismiss }: { item: ToastItem; onDismiss: (id: numbe
   )
 }
 
+/** Toast ids only need to be unique within the page. */
+let nextToastId = 1
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([])
-  const nextId = useRef(1)
 
   const dismiss = useCallback((id: number) => setItems((list) => list.filter((t) => t.id !== id)), [])
 
   const push = useCallback((tone: ToastTone, title: string, description?: string) => {
-    const id = nextId.current++
+    const id = nextToastId++
     setItems((list) => {
       // Collapse identical consecutive toasts (e.g. a poller failing repeatedly).
       const last = list[list.length - 1]
@@ -75,18 +70,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const api = useMemo<ToastApi>(
-    () => ({
-      success: (title, description) => push('success', title, description),
-      info: (title, description) => push('info', title, description),
-      error: (errOrTitle, title) => {
-        if (typeof errOrTitle === 'string' && title === undefined) push('error', errOrTitle)
-        else if (title) push('error', title, errorMessage(errOrTitle))
-        else push('error', errorMessage(errOrTitle))
-      },
-    }),
-    [push],
-  )
+  const api = useMemo(() => createToastApi(push), [push])
 
   return (
     <ToastContext.Provider value={api}>
@@ -100,7 +84,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   )
 }
 
-// eslint-disable-next-line react/only-export-components
+// oxlint-disable-next-line react/only-export-components
 export function useToast(): ToastApi {
   const ctx = useContext(ToastContext)
   if (!ctx) throw new Error('useToast must be used inside ToastProvider')

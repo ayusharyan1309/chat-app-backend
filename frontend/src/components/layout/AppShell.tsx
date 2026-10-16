@@ -13,10 +13,11 @@ import {
   Sun,
   X,
 } from 'lucide-react'
-import { Suspense, useState, type FormEvent, type ReactNode } from 'react'
+import { Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { authApi } from '../../api/admin'
 import { useAction } from '../../hooks/useAction'
+import { useMediaQuery } from '../../hooks/useMediaQuery'
 import { formatDuration } from '../../lib/format'
 import { cx } from '../../lib/util'
 import { useAuth } from '../../state/auth'
@@ -64,9 +65,14 @@ const NAV: Array<{ group: string; items: NavItem[] }> = [
   },
 ]
 
-function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () => void }) {
+/** Must match layout.css: at this width the closed sidebar is moved off-canvas. */
+const DRAWER_QUERY = '(max-width: 720px)'
+const NAV_ID = 'main-navigation'
+
+function Sidebar({ open, offscreen, onNavigate, ref }: { open: boolean; offscreen: boolean; onNavigate: () => void; ref: Ref<HTMLElement> }) {
   return (
-    <aside className={cx('sidebar', open && 'is-open')} aria-label="Main navigation">
+    // A closed off-canvas drawer is invisible, so its links must not be reachable by Tab or a screen reader.
+    <aside id={NAV_ID} ref={ref} className={cx('sidebar', open && 'is-open')} aria-label="Main navigation" inert={offscreen}>
       <div className="sidebar__brand">
         <BrandMark size={28} />
         <div className="sidebar__brand-text">
@@ -175,18 +181,20 @@ function ChangePasswordDialog({ open, onClose }: { open: boolean; onClose: () =>
   )
 }
 
-function TopBar({ onToggleNav, navOpen }: { onToggleNav: () => void; navOpen: boolean }) {
+function TopBar({ onToggleNav, navOpen, toggleRef }: { onToggleNav: () => void; navOpen: boolean; toggleRef: Ref<HTMLButtonElement> }) {
   const { theme, toggle } = useTheme()
   const { admin, logout } = useAuth()
   const [pwOpen, setPwOpen] = useState(false)
   return (
     <header className="topbar">
       <IconButton
+        ref={toggleRef}
         className="topbar__nav-toggle"
         label={navOpen ? 'Close navigation' : 'Open navigation'}
         icon={navOpen ? <X size={18} aria-hidden /> : <MenuIcon size={18} aria-hidden />}
         onClick={onToggleNav}
         aria-expanded={navOpen}
+        aria-controls={NAV_ID}
       />
       <NodeStatus />
       <div className="spacer" />
@@ -243,20 +251,42 @@ export function PageFallback() {
 
 export function AppShell() {
   const [navOpen, setNavOpen] = useState(false)
-  const { admin } = useAuth()
+  const { admin, status } = useAuth()
+  const drawerMode = useMediaQuery(DRAWER_QUERY)
+  const sidebarRef = useRef<HTMLElement>(null)
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  const closeNav = useCallback(() => setNavOpen(false), [])
+
+  // While the drawer is open: move focus into it, and close it on Escape (focus returns to the toggle).
+  useEffect(() => {
+    if (!navOpen) return
+    sidebarRef.current?.querySelector<HTMLElement>('a[href]')?.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      setNavOpen(false)
+      toggleRef.current?.focus()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [navOpen])
 
   return (
     <div className="shell">
       <a className="skip-link" href="#main">
         Skip to content
       </a>
-      <Sidebar open={navOpen} onNavigate={() => setNavOpen(false)} />
-      {navOpen ? <div className="shell__scrim" onClick={() => setNavOpen(false)} aria-hidden /> : null}
+      <Sidebar ref={sidebarRef} open={navOpen} offscreen={drawerMode && !navOpen} onNavigate={closeNav} />
+      {navOpen ? <div className="shell__scrim" onClick={closeNav} aria-hidden /> : null}
       <div className="shell__main">
-        <TopBar onToggleNav={() => setNavOpen((o) => !o)} navOpen={navOpen} />
+        <TopBar onToggleNav={() => setNavOpen((o) => !o)} navOpen={navOpen} toggleRef={toggleRef} />
         {admin?.role === 'VIEWER' ? (
           <div className="viewer-banner" role="note">
             You are signed in with the read-only Viewer role. Changes are disabled.
+          </div>
+        ) : null}
+        {status === 'authenticated' && !admin ? (
+          <div className="viewer-banner" role="note">
+            Your admin profile could not be loaded, so your role is unknown and changes are disabled. Retrying in the background.
           </div>
         ) : null}
         <main id="main" className="shell__content" tabIndex={-1}>

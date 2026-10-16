@@ -14,7 +14,7 @@ import { formatDate, formatRelative } from '../../lib/format'
 import { useConfirm } from '../../state/confirm'
 import { useToast } from '../../state/toast'
 import type { ApiKey, ApiKeyCreated } from '../../types'
-import type { TenantTabProps } from './types'
+import type { TenantTabProps } from './tenantTab'
 
 function CreateKeyDialog({ slug, onClose, onCreated }: { slug: string; onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('')
