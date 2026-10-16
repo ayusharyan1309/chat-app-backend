@@ -1,0 +1,215 @@
+package com.ayush.chat.push.webhook;
+
+import com.ayush.chat.core.connector.HealthStatus;
+import com.ayush.chat.core.util.Json;
+import com.ayush.chat.push.PushSender;
+import lombok.extern.slf4j.Slf4j;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Collection;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Hands each notification to the tenant's own push service (APNs, OneSignal, ...) as an HTTP POST.
+ *
+ * <p>Body: JSON {@code {event, timestamp, tenantId, userId, deviceTokens, title, body, data}}.
+ * Headers: {@code X-Chat-Timestamp} (epoch seconds, equal to {@code timestamp} in the body) and,
+ * when a secret is configured, {@code X-Chat-Signature: sha256=<hex HMAC-SHA256 of the raw body>}.
+ * Because the timestamp is inside the signed body, receivers can reject stale replays.
+ *
+ * <p>Any 2xx response counts as delivered. A 2xx JSON response may report
+ * {@code {"invalidTokens": [...], "delivered": n, "failed": n}}; reported tokens are passed back so
+ * the caller can forget them. Other statuses and network errors count as failed (no retries here).
+ */
+@Slf4j
+public class WebhookPushSender implements PushSender {
+
+    public static final String SIGNATURE_HEADER = "X-Chat-Signature";
+    public static final String TIMESTAMP_HEADER = "X-Chat-Timestamp";
+    private static final int MAX_RESPONSE_BYTES = 64 * 1024;
+
+    record WebhookPayload(String event, long timestamp, String tenantId, String userId, Collection<String> deviceTokens,
+                          String title, String body, Map<String, String> data) {
+    }
+
+    private final URI url;
+    private final byte[] secret;
+    private final Duration timeout;
+    private final HttpClient http;
+    private final AtomicLong delivered = new AtomicLong();
+    private final AtomicLong failed = new AtomicLong();
+    private final AtomicBoolean closed = new AtomicBoolean();
+
+    public WebhookPushSender(String url, String secret, Duration timeout) {
+        this.url = parseUrl(url);
+        this.secret = secret == null || secret.isBlank() ? null : secret.getBytes(StandardCharsets.UTF_8);
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("Timeout must be positive");
+        }
+        this.timeout = timeout;
+        this.http = HttpClient.newBuilder()
+                .connectTimeout(timeout)
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+    }
+
+    @Override
+    public String providerId() {
+        return "webhook";
+    }
+
+    /** Settings sanity only: the endpoint is not called. */
+    @Override
+    public HealthStatus health() {
+        if (closed.get()) {
+            return HealthStatus.down("closed");
+        }
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("url", url.getScheme() + "://" + url.getAuthority() + (url.getRawPath() == null ? "" : url.getRawPath()));
+        details.put("signed", secret != null);
+        details.put("delivered", delivered.get());
+        details.put("failed", failed.get());
+        StringBuilder message = new StringBuilder("Webhook configured");
+        if (secret == null) {
+            message.append(" (unsigned: set a secret so the receiver can verify requests)");
+        }
+        if ("http".equals(url.getScheme())) {
+            message.append(" (plain HTTP)");
+        }
+        return HealthStatus.up(message.toString(), details);
+    }
+
+    @Override
+    public PushResult send(PushNotification notification) {
+        if (closed.get()) {
+            throw new IllegalStateException("Push sender closed");
+        }
+        Set<String> tokens = new TreeSet<>();
+        if (notification.deviceTokens() != null) {
+            notification.deviceTokens().stream().filter(t -> t != null && !t.isBlank()).forEach(tokens::add);
+        }
+        // Without device tokens the receiver may still resolve devices from userId: count the notification once.
+        int targets = Math.max(1, tokens.size());
+        long timestamp = Instant.now().getEpochSecond();
+        byte[] body = Json.write(new WebhookPayload("push", timestamp, notification.tenantId(), notification.userId(),
+                tokens, notification.title(), notification.body(), notification.data())).getBytes(StandardCharsets.UTF_8);
+
+        HttpRequest.Builder request = HttpRequest.newBuilder(url)
+                .timeout(timeout)
+                .header("Content-Type", "application/json")
+                .header(TIMESTAMP_HEADER, String.valueOf(timestamp))
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body));
+        if (secret != null) {
+            request.header(SIGNATURE_HEADER, sign(secret, body));
+        }
+        try {
+            HttpResponse<InputStream> response = http.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
+            String responseBody;
+            try (InputStream in = response.body()) {
+                responseBody = new String(in.readNBytes(MAX_RESPONSE_BYTES), StandardCharsets.UTF_8);
+            }
+            if (response.statusCode() / 100 == 2) {
+                return record(fromResponse(responseBody, targets, tokens));
+            }
+            log.warn("Push webhook {} answered HTTP {} for {}/{}", url.getHost(), response.statusCode(),
+                    notification.tenantId(), notification.userId());
+        } catch (IOException e) {
+            log.warn("Push webhook {} failed for {}/{}: {}", url.getHost(), notification.tenantId(), notification.userId(),
+                    e.toString());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return record(new PushResult(0, targets, Set.of()));
+    }
+
+    @Override
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            http.shutdown();
+            try {
+                if (!http.awaitTermination(timeout)) {
+                    http.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                http.shutdownNow();
+            }
+        }
+    }
+
+    /** {@code sha256=<hex HMAC-SHA256(secret, body)>}. */
+    public static String sign(byte[] secret, byte[] body) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret, "HmacSHA256"));
+            return "sha256=" + HexFormat.of().formatHex(mac.doFinal(body));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("HmacSHA256 unavailable", e);
+        }
+    }
+
+    private PushResult record(PushResult result) {
+        delivered.addAndGet(result.delivered());
+        failed.addAndGet(result.failed());
+        return result;
+    }
+
+    /** Optional receiver report; only tokens that were actually sent may be reported invalid. */
+    static PushResult fromResponse(String body, int targets, Set<String> sentTokens) {
+        if (body == null || !body.trim().startsWith("{")) {
+            return new PushResult(targets, 0, Set.of());
+        }
+        try {
+            Map<String, Object> report = Json.readMap(body);
+            Set<String> invalid = new LinkedHashSet<>();
+            if (report.get("invalidTokens") instanceof List<?> list) {
+                for (Object token : list) {
+                    if (token instanceof String s && sentTokens.contains(s)) {
+                        invalid.add(s);
+                    }
+                }
+            }
+            int failedCount = report.get("failed") instanceof Number n ? n.intValue() : invalid.size();
+            int deliveredCount = report.get("delivered") instanceof Number n ? n.intValue() : Math.max(0, targets - failedCount);
+            return new PushResult(deliveredCount, failedCount, Set.copyOf(invalid));
+        } catch (Exception e) {
+            return new PushResult(targets, 0, Set.of()); // 2xx with an unparseable body still means accepted
+        }
+    }
+
+    static URI parseUrl(String url) {
+        if (url == null || url.isBlank()) {
+            throw new IllegalArgumentException("Webhook URL is required");
+        }
+        URI uri;
+        try {
+            uri = URI.create(url.trim());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid webhook URL: " + url, e);
+        }
+        if (uri.getScheme() == null || !(uri.getScheme().equalsIgnoreCase("http") || uri.getScheme().equalsIgnoreCase("https"))
+                || uri.getHost() == null) {
+            throw new IllegalArgumentException("Webhook URL must be an absolute http(s) URL");
+        }
+        return uri;
+    }
+}
