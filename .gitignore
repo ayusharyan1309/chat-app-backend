@@ -37,3 +37,6 @@ logs/
 data/
 *.log
 .env
+
+### Local agent worktrees ###
+.claude/
