@@ -34,8 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Runs the cache contract against a real Redis: {@code REDIS_URL}, else {@code redis://localhost:6379};
- * skipped when neither is reachable. Keys live under a random prefix and are removed afterwards.
+ * Runs the cache contract against the throwaway Redis named by {@code REDIS_URL}; skipped when it is
+ * unset or unreachable. Keys live under a random prefix and are removed afterwards.
  */
 class RedisCacheStoreTest extends CacheStoreConformanceTest {
 
@@ -51,8 +51,9 @@ class RedisCacheStoreTest extends CacheStoreConformanceTest {
             ((Logger) LoggerFactory.getLogger(noisy)).setLevel(Level.WARN);
         }
         String env = System.getenv("REDIS_URL");
-        redisUrl = env == null || env.isBlank() ? "redis://localhost:6379" : env.trim();
-        available = ping(redisUrl);
+        // Opt-in only: never fall back to a developer's own Redis (these tests run SCRIPT FLUSH).
+        redisUrl = env == null || env.isBlank() ? null : env.trim();
+        available = redisUrl != null && ping(redisUrl);
     }
 
     @AfterAll

@@ -4,6 +4,7 @@ import com.ayush.chat.core.error.DomainException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.util.Locale;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
@@ -30,7 +31,7 @@ public class OutboundUrlPolicy {
         } catch (Exception e) {
             throw DomainException.badRequest("Invalid URL: " + url);
         }
-        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
         if (!scheme.equals("https") && !scheme.equals("http")) {
             throw DomainException.badRequest("URL must use http or https");
         }

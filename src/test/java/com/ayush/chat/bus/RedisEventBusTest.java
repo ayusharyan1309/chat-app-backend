@@ -36,8 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 /**
- * Runs the bus contract against a real Redis: {@code REDIS_URL}, else {@code redis://localhost:6379};
- * skipped when neither is reachable. Channels and streams use a random prefix; streams are removed afterwards.
+ * Runs the bus contract against the throwaway Redis named by {@code REDIS_URL}; skipped when it is
+ * unset or unreachable. Channels and streams use a random prefix; streams are removed afterwards.
  */
 class RedisEventBusTest extends EventBusConformanceTest {
 

@@ -1,5 +1,7 @@
 package com.ayush.chat.core.connector;
 
+import java.util.Locale;
+
 /**
  * The pluggable infrastructure slots of the platform. Each slot has exactly one active
  * provider at platform level; {@link #tenantOverridable} slots may be overridden per tenant.
@@ -36,7 +38,7 @@ public enum ConnectorKind {
 
     /** Path-friendly id, e.g. {@code message-store}. */
     public String slug() {
-        return name().toLowerCase().replace('_', '-');
+        return name().toLowerCase(Locale.ROOT).replace('_', '-');
     }
 
     public static ConnectorKind fromSlug(String slug) {

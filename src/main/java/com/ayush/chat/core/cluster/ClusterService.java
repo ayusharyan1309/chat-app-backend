@@ -14,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.util.Locale;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -56,7 +57,7 @@ public class ClusterService {
         this.settings = properties.getCluster();
         this.version = buildVersion.get();
         this.nodeId = properties.getNodeId() == null || properties.getNodeId().isBlank()
-                ? "node-" + Ids.randomToken(6).toLowerCase() : properties.getNodeId();
+                ? "node-" + Ids.randomToken(6).toLowerCase(Locale.ROOT) : properties.getNodeId();
         connectors.holder(ConnectorKind.CACHE, CacheStore.class).onSwap((previous, next) -> {
             if (previous != null) {
                 claimSlot();

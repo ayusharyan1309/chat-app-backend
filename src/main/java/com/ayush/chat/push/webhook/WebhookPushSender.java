@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.UnaryOperator;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -58,8 +59,15 @@ public class WebhookPushSender implements PushSender {
     private final AtomicLong delivered = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /** Re-validates the endpoint before every send (DNS can change after the connector was saved). */
+    private final UnaryOperator<URI> urlGuard;
 
     public WebhookPushSender(String url, String secret, Duration timeout) {
+        this(url, secret, timeout, UnaryOperator.identity());
+    }
+
+    public WebhookPushSender(String url, String secret, Duration timeout, UnaryOperator<URI> urlGuard) {
+        this.urlGuard = urlGuard;
         this.url = parseUrl(url);
         this.secret = secret == null || secret.isBlank() ? null : secret;
         if (timeout == null || timeout.isZero() || timeout.isNegative()) {
@@ -113,7 +121,14 @@ public class WebhookPushSender implements PushSender {
         String body = Json.write(new WebhookPayload("push", timestamp, notification.tenantId(), notification.userId(),
                 tokens, notification.title(), notification.body(), notification.data()));
 
-        HttpRequest.Builder request = HttpRequest.newBuilder(url)
+        URI target;
+        try {
+            target = urlGuard.apply(url);
+        } catch (RuntimeException rejected) {
+            log.warn("Push webhook {} rejected by the outbound URL policy: {}", url.getHost(), rejected.getMessage());
+            return record(new PushResult(0, targets, Set.of()));
+        }
+        HttpRequest.Builder request = HttpRequest.newBuilder(target)
                 .timeout(timeout)
                 .header("Content-Type", "application/json")
                 .header(WebhookSignature.TIMESTAMP_HEADER, String.valueOf(timestamp))

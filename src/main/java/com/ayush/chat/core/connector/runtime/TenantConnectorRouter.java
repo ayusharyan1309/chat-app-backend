@@ -10,6 +10,7 @@ import com.ayush.chat.core.connector.HealthStatus;
 import com.ayush.chat.core.error.DomainException;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.Locale;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -86,7 +87,7 @@ public class TenantConnectorRouter<T extends Connector> implements AutoCloseable
             try {
                 holder.apply(override.get());
             } catch (Exception e) {
-                String message = "Tenant " + kind.getDisplayName().toLowerCase() + " is unavailable: " + e.getMessage();
+                String message = "Tenant " + kind.getDisplayName().toLowerCase(Locale.ROOT) + " is unavailable: " + e.getMessage();
                 log.error("Dedicated {} for tenant {} failed: {}", kind.getDisplayName(), tenantSlug, e.getMessage());
                 failures.put(tenantSlug, new Failure(message, Instant.now().plus(failureBackoff)));
                 throw DomainException.unavailable(message);

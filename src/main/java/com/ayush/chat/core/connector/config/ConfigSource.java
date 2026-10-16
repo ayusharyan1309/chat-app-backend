@@ -2,6 +2,8 @@ package com.ayush.chat.core.connector.config;
 
 import com.fasterxml.jackson.annotation.JsonValue;
 
+import java.util.Locale;
+
 /**
  * Where the active configuration of a slot comes from.
  */
@@ -13,6 +15,6 @@ public enum ConfigSource {
 
     @JsonValue
     public String json() {
-        return name().toLowerCase();
+        return name().toLowerCase(Locale.ROOT);
     }
 }

@@ -7,6 +7,8 @@ import com.ayush.chat.core.cluster.BusTopic;
 import com.ayush.chat.core.cluster.ClusterBus;
 import com.ayush.chat.core.connector.runtime.TenantConnectors;
 import com.ayush.chat.push.PushSender;
+import com.ayush.chat.store.MessagePreview;
+import com.ayush.chat.store.model.ChatMessage;
 import com.ayush.chat.store.model.ChatUser;
 import com.ayush.chat.tenant.Feature;
 import com.ayush.chat.tenant.TenantDirectory;
@@ -26,8 +28,6 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class PushDispatcher {
-
-    private static final int MAX_PREVIEW = 120;
 
     private final ClusterBus bus;
     private final TenantDirectory tenants;
@@ -85,19 +85,14 @@ public class PushDispatcher {
         return v == null ? "" : v;
     }
 
+    /** Same wording as inbox previews; a text without content still says something. */
     private static String preview(Map<?, ?> message) {
-        Object content = message.get("content");
-        if (content != null && !String.valueOf(content).isBlank()) {
-            String text = String.valueOf(content);
-            return text.length() > MAX_PREVIEW ? text.substring(0, MAX_PREVIEW - 1) + "…" : text;
-        }
-        return switch (String.valueOf(value(message, "type"))) {
-            case "IMAGE" -> "📷 Photo";
-            case "VIDEO" -> "🎥 Video";
-            case "AUDIO" -> "🎤 Voice message";
-            case "FILE" -> "📄 File";
-            case "LOCATION" -> "📍 Location";
-            default -> "New message";
-        };
+        Object type = message.get("type");
+        Object attachment = message.get("attachment");
+        String fileName = attachment instanceof Map<?, ?> a && a.get("fileName") != null ? String.valueOf(a.get("fileName")) : null;
+        String preview = MessagePreview.of(type == null ? ChatMessage.Type.TEXT : ChatMessage.Type.valueOf(String.valueOf(type)),
+                message.get("content") == null ? null : String.valueOf(message.get("content")), fileName,
+                Boolean.TRUE.equals(message.get("deleted")));
+        return preview.isBlank() ? "New message" : preview;
     }
 }

@@ -53,6 +53,6 @@ public class WebhookPushFactory implements ConnectorFactory<PushSender> {
         String url = settings.required("url");
         urlPolicy.check(url);
         return new WebhookPushSender(url, settings.string("secret", null),
-                Duration.ofMillis(settings.integer("timeoutMs", DEFAULT_TIMEOUT_MS)));
+                Duration.ofMillis(settings.integer("timeoutMs", DEFAULT_TIMEOUT_MS)), uri -> urlPolicy.check(uri.toString()));
     }
 }
