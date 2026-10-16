@@ -3,19 +3,28 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "oxlint",
+    "typecheck": "tsc -b --noEmit",
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run lint && npm run typecheck && npm test",
     "preview": "vite preview"
   },
   "dependencies": {
     "@stomp/stompjs": "^7.3.0",
     "axios": "^1.20.0",
+    "lucide-react": "1.40.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-is": "19.2.8",
     "react-router-dom": "^7.18.3",
-    "sockjs-client": "^1.6.1"
+    "recharts": "3.10.1"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
@@ -24,6 +33,7 @@
     "@vitejs/plugin-react": "^6.1.0",
     "oxlint": "^1.79.0",
     "typescript": "~6.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "vitest": "3.2.7"
   }
 }

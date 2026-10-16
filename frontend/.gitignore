@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local environment overrides (copy .env.example)
+.env
+.env.*
+!.env.example

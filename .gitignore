@@ -31,3 +31,12 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Runtime data ###
+logs/
+data/
+*.log
+.env
+
+### Local agent worktrees ###
+.claude/
