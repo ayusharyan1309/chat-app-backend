@@ -1,11 +1,13 @@
-package com.ayush.chat.core.config;
+package com.ayush.chat.core.connector.config;
 
+import com.ayush.chat.core.config.PlatformProperties;
 import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorConfig;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.crypto.SecretCipher;
+import com.ayush.chat.core.util.AfterCommit;
 import com.ayush.chat.core.util.Json;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -14,16 +16,13 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -45,46 +44,59 @@ public class ConnectorConfigService {
     private final ApplicationEventPublisher events;
     private final TaskScheduler scheduler;
 
-    private final Map<String, Long> knownVersions = new ConcurrentHashMap<>();
+    /** (scope, kind) -> last seen version, to detect changes made on other nodes. */
+    private final Map<VersionKey, Long> knownVersions = new ConcurrentHashMap<>();
 
     public record StoredConfig(ConnectorConfig config, long version, Instant updatedAt, String updatedBy) {
     }
 
+    private record VersionKey(ConfigScope scope, ConnectorKind kind) {
+    }
+
     @PostConstruct
     void startPolling() {
-        repository.findAll().forEach(e -> knownVersions.put(versionKey(e.getScopeKey(), e.getKind()), e.getVersion()));
+        repository.findAll().forEach(e -> knownVersions.put(new VersionKey(e.scope(), e.getKind()), e.getVersion()));
         scheduler.scheduleWithFixedDelay(this::poll, properties.getConfigPollInterval());
     }
 
     // ------------------------------------------------------------------ reads
 
+    /** Bootstrap config from application.yml / environment, else the built-in default. */
     public ConnectorConfig bootstrap(ConnectorKind kind) {
         PlatformProperties.ConnectorBootstrap b = properties.getConnectors().get(kind.slug());
         if (b != null && b.getProvider() != null) {
             return new ConnectorConfig(kind, b.getProvider(), b.getSettings());
         }
-        return switch (kind) {
-            case MESSAGE_STORE -> new ConnectorConfig(kind, "h2", Map.of("url", "jdbc:h2:file:./data/chat-store"));
-            case CACHE -> new ConnectorConfig(kind, "memory", Map.of());
-            case EVENT_BUS -> new ConnectorConfig(kind, "memory", Map.of());
-            case BLOB_STORE -> new ConnectorConfig(kind, "local", Map.of("directory", "./data/media"));
-            case PUSH -> new ConnectorConfig(kind, "none", Map.of());
-        };
+        return DefaultConnectors.builtIn(kind);
     }
 
     @Transactional(readOnly = true)
-    public Optional<StoredConfig> stored(String scopeKey, ConnectorKind kind) {
-        return repository.findByScopeKeyAndKind(scopeKey, kind.name()).map(this::toStored);
+    public Optional<StoredConfig> stored(ConfigScope scope, ConnectorKind kind) {
+        return repository.findByScopeKeyAndKind(scope.key(), kind).map(this::toStored);
     }
 
     @Transactional(readOnly = true)
     public ConnectorConfig effectivePlatform(ConnectorKind kind) {
-        return stored(ConnectorConfigChangedEvent.PLATFORM, kind).map(StoredConfig::config).orElseGet(() -> bootstrap(kind));
+        return stored(ConfigScope.PLATFORM, kind).map(StoredConfig::config).orElseGet(() -> bootstrap(kind));
+    }
+
+    public ConfigSource platformSource(ConnectorKind kind) {
+        return stored(ConfigScope.PLATFORM, kind).isPresent() ? ConfigSource.DATABASE : ConfigSource.BOOTSTRAP;
     }
 
     @Transactional(readOnly = true)
     public Optional<ConnectorConfig> tenantOverride(String tenantSlug, ConnectorKind kind) {
-        return stored(ConnectorConfigChangedEvent.tenantScope(tenantSlug), kind).map(StoredConfig::config);
+        return stored(ConfigScope.tenant(tenantSlug), kind).map(StoredConfig::config);
+    }
+
+    /** Provider id of every tenant override of one kind, in one query (tenant slug -> provider). */
+    @Transactional(readOnly = true)
+    public Map<String, String> tenantOverrideProviders(ConnectorKind kind) {
+        Map<String, String> providers = new HashMap<>();
+        for (ConnectorConfigEntity e : repository.findByKindAndScopeKeyStartingWith(kind, ConfigScope.TENANT_PREFIX)) {
+            providers.put(e.scope().tenantSlug(), e.getProvider());
+        }
+        return providers;
     }
 
     /** Settings with every non-empty secret replaced by {@link #MASK}. */
@@ -105,10 +117,10 @@ public class ConnectorConfigService {
      * Replace masked secret placeholders in submitted settings with the currently stored values
      * (same scope, same provider), so the UI can round-trip settings without ever seeing secrets.
      */
-    public ConnectorConfig unmask(String scopeKey, ConnectorKind kind, String provider, Map<String, Object> submitted) {
+    public ConnectorConfig unmask(ConfigScope scope, ConnectorKind kind, String provider, Map<String, Object> submitted) {
         Map<String, Object> settings = new LinkedHashMap<>(submitted == null ? Map.of() : submitted);
-        ConnectorConfig current = stored(scopeKey, kind).map(StoredConfig::config)
-                .orElseGet(() -> ConnectorConfigChangedEvent.PLATFORM.equals(scopeKey) ? bootstrap(kind) : null);
+        ConnectorConfig current = stored(scope, kind).map(StoredConfig::config)
+                .orElseGet(() -> scope.isPlatform() ? bootstrap(kind) : null);
         settings.replaceAll((key, value) -> {
             if (MASK.equals(value)) {
                 return current != null && current.provider().equals(provider) ? current.settings().get(key) : null;
@@ -122,7 +134,7 @@ public class ConnectorConfigService {
     // ------------------------------------------------------------------ writes
 
     @Transactional
-    public StoredConfig save(String scopeKey, ConnectorConfig config, String actor) {
+    public StoredConfig save(ConfigScope scope, ConnectorConfig config, String actor) {
         ConnectorDescriptor descriptor = registry.descriptor(config.kind(), config.provider());
         Map<String, Object> encrypted = new LinkedHashMap<>(config.settings());
         for (ConfigField field : descriptor.fields()) {
@@ -131,39 +143,39 @@ public class ConnectorConfigService {
                 encrypted.put(field.key(), cipher.encrypt(String.valueOf(value)));
             }
         }
-        ConnectorConfigEntity entity = repository.findByScopeKeyAndKind(scopeKey, config.kind().name())
+        ConnectorConfigEntity entity = repository.findByScopeKeyAndKind(scope.key(), config.kind())
                 .orElseGet(ConnectorConfigEntity::new);
-        entity.setScopeKey(scopeKey);
-        entity.setKind(config.kind().name());
+        entity.setScopeKey(scope.key());
+        entity.setKind(config.kind());
         entity.setProvider(config.provider());
         entity.setSettingsJson(Json.write(encrypted));
         entity.setVersion(entity.getVersion() + 1);
         entity.setUpdatedAt(Instant.now());
         entity.setUpdatedBy(actor);
         repository.save(entity);
-        knownVersions.put(versionKey(scopeKey, config.kind().name()), entity.getVersion());
-        publishAfterCommit(new ConnectorConfigChangedEvent(scopeKey, config.kind()));
+        knownVersions.put(new VersionKey(scope, config.kind()), entity.getVersion());
+        publishAfterCommit(new ConnectorConfigChangedEvent(scope, config.kind()));
         return toStored(entity);
     }
 
     @Transactional
-    public boolean delete(String scopeKey, ConnectorKind kind) {
-        Optional<ConnectorConfigEntity> existing = repository.findByScopeKeyAndKind(scopeKey, kind.name());
+    public boolean delete(ConfigScope scope, ConnectorKind kind) {
+        Optional<ConnectorConfigEntity> existing = repository.findByScopeKeyAndKind(scope.key(), kind);
         existing.ifPresent(e -> {
             repository.delete(e);
-            knownVersions.remove(versionKey(scopeKey, kind.name()));
-            publishAfterCommit(new ConnectorConfigChangedEvent(scopeKey, kind));
+            knownVersions.remove(new VersionKey(scope, kind));
+            publishAfterCommit(new ConnectorConfigChangedEvent(scope, kind));
         });
         return existing.isPresent();
     }
 
     @Transactional
-    public void deleteScope(String scopeKey) {
-        List<ConnectorConfigEntity> rows = repository.findByScopeKey(scopeKey);
+    public void deleteScope(ConfigScope scope) {
+        List<ConnectorConfigEntity> rows = repository.findByScopeKey(scope.key());
         repository.deleteAll(rows);
         for (ConnectorConfigEntity row : rows) {
-            knownVersions.remove(versionKey(scopeKey, row.getKind()));
-            publishAfterCommit(new ConnectorConfigChangedEvent(scopeKey, ConnectorKind.valueOf(row.getKind())));
+            knownVersions.remove(new VersionKey(scope, row.getKind()));
+            publishAfterCommit(new ConnectorConfigChangedEvent(scope, row.getKind()));
         }
     }
 
@@ -173,49 +185,36 @@ public class ConnectorConfigService {
         Map<String, Object> settings = Optional.ofNullable(Json.readMap(entity.getSettingsJson())).orElseGet(Map::of);
         Map<String, Object> plain = new LinkedHashMap<>();
         settings.forEach((k, v) -> plain.put(k, v instanceof String s && cipher.isEncrypted(s) ? cipher.decrypt(s) : v));
-        ConnectorConfig config = new ConnectorConfig(ConnectorKind.valueOf(entity.getKind()), entity.getProvider(), plain);
+        ConnectorConfig config = new ConnectorConfig(entity.getKind(), entity.getProvider(), plain);
         return new StoredConfig(config, entity.getVersion(), entity.getUpdatedAt(), entity.getUpdatedBy());
     }
 
     private void publishAfterCommit(ConnectorConfigChangedEvent event) {
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    events.publishEvent(event);
-                }
-            });
-        } else {
-            events.publishEvent(event);
-        }
+        AfterCommit.run(() -> events.publishEvent(event));
     }
 
     /** Detect rows changed by other nodes and replay them as local events. */
     void poll() {
         try {
-            Set<String> seen = new HashSet<>();
+            Map<VersionKey, Long> current = new HashMap<>();
             for (ConnectorConfigEntity e : repository.findAll()) {
-                String key = versionKey(e.getScopeKey(), e.getKind());
-                seen.add(key);
-                Long known = knownVersions.put(key, e.getVersion());
-                if (known == null || known != e.getVersion()) {
-                    log.info("Connector config changed elsewhere: {} {}", e.getScopeKey(), e.getKind());
-                    events.publishEvent(new ConnectorConfigChangedEvent(e.getScopeKey(), ConnectorKind.valueOf(e.getKind())));
-                }
+                current.put(new VersionKey(e.scope(), e.getKind()), e.getVersion());
             }
-            for (String key : Set.copyOf(knownVersions.keySet())) {
-                if (!seen.contains(key)) {
+            current.forEach((key, version) -> {
+                Long known = knownVersions.put(key, version);
+                if (known == null || !known.equals(version)) {
+                    log.info("Connector config changed elsewhere: {} {}", key.scope(), key.kind());
+                    events.publishEvent(new ConnectorConfigChangedEvent(key.scope(), key.kind()));
+                }
+            });
+            for (VersionKey key : List.copyOf(knownVersions.keySet())) {
+                if (!current.containsKey(key)) {
                     knownVersions.remove(key);
-                    String[] parts = key.split("\\|", 2);
-                    events.publishEvent(new ConnectorConfigChangedEvent(parts[0], ConnectorKind.valueOf(parts[1])));
+                    events.publishEvent(new ConnectorConfigChangedEvent(key.scope(), key.kind()));
                 }
             }
         } catch (Exception e) {
             log.warn("Config poll failed: {}", e.getMessage());
         }
-    }
-
-    private static String versionKey(String scopeKey, String kind) {
-        return scopeKey + "|" + kind;
     }
 }

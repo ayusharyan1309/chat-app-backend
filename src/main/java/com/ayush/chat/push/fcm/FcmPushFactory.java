@@ -4,6 +4,7 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.push.PushSender;
 import org.springframework.stereotype.Component;
@@ -17,7 +18,7 @@ public class FcmPushFactory implements ConnectorFactory<PushSender> {
     public ConnectorDescriptor descriptor() {
         return new ConnectorDescriptor(ConnectorKind.PUSH, "fcm", "Firebase Cloud Messaging",
                 "Push to Android, iOS (through FCM's APNs integration) and web clients. Dead tokens are reported for cleanup.",
-                "Mobile push", "GA", List.of(),
+                "Mobile push", Maturity.GA, List.of(),
                 List.of(ConfigField.of("credentialsJson", "Service account JSON").secret().required()
                                 .placeholder("{\"type\": \"service_account\", \"project_id\": ...}")
                                 .description("Firebase console → Project settings → Service accounts → Generate new private key").build(),

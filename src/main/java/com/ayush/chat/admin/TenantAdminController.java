@@ -1,5 +1,6 @@
 package com.ayush.chat.admin;
 
+import com.ayush.chat.audit.AuditService;
 import com.ayush.chat.auth.ApiKey;
 import com.ayush.chat.auth.ApiKeyService;
 import com.ayush.chat.auth.JwtService;
@@ -8,15 +9,15 @@ import com.ayush.chat.chat.Views.UserView;
 import com.ayush.chat.chat.webhook.WebhookDelivery;
 import com.ayush.chat.chat.webhook.WebhookService;
 import com.ayush.chat.core.cluster.ClusterService;
-import com.ayush.chat.core.config.ConnectorConfigChangedEvent;
-import com.ayush.chat.core.config.ConnectorConfigService;
-import com.ayush.chat.core.config.TenantConnectorRouter;
-import com.ayush.chat.core.config.TenantConnectors;
+import com.ayush.chat.core.connector.config.ConfigScope;
+import com.ayush.chat.core.connector.config.ConnectorConfigService;
+import com.ayush.chat.core.connector.runtime.TenantConnectorRouter;
+import com.ayush.chat.core.connector.runtime.TenantConnectors;
 import com.ayush.chat.core.connector.ConnectorConfig;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.store.model.StoreStats;
 import com.ayush.chat.tenant.Feature;
@@ -194,7 +195,7 @@ public class TenantAdminController {
                                               @RequestBody ConnectorRequest request) {
         tenantService.get(slug);
         ConnectorKind k = overridable(kind);
-        ConnectorConfig config = configService.unmask(ConnectorConfigChangedEvent.tenantScope(slug), k, request.provider(),
+        ConnectorConfig config = configService.unmask(ConfigScope.tenant(slug), k, request.provider(),
                 request.settings());
         connectors.router(k).apply(slug, config, AuditService.currentActor());
         audit.record("tenant.connector_updated", "connector", k.slug(), slug, "provider=" + request.provider());
@@ -205,7 +206,7 @@ public class TenantAdminController {
     public HealthStatus testConnector(@PathVariable String slug, @PathVariable String kind, @RequestBody ConnectorRequest request) {
         tenantService.get(slug);
         ConnectorKind k = overridable(kind);
-        return registry.test(configService.unmask(ConnectorConfigChangedEvent.tenantScope(slug), k, request.provider(),
+        return registry.test(configService.unmask(ConfigScope.tenant(slug), k, request.provider(),
                 request.settings()));
     }
 
@@ -213,7 +214,7 @@ public class TenantAdminController {
     public Map<String, Object> inheritConnector(@PathVariable String slug, @PathVariable String kind) {
         tenantService.get(slug);
         ConnectorKind k = overridable(kind);
-        configService.delete(ConnectorConfigChangedEvent.tenantScope(slug), k);
+        configService.delete(ConfigScope.tenant(slug), k);
         connectors.router(k).invalidate(slug);
         audit.record("tenant.connector_reset", "connector", k.slug(), slug, "inherit platform default");
         return connectorState(slug, k);
@@ -235,7 +236,7 @@ public class TenantAdminController {
     private static ConnectorKind overridable(String slug) {
         ConnectorKind kind = ConnectorKind.fromSlug(slug);
         if (!kind.isTenantOverridable()) {
-            throw ApiException.badRequest(kind.getDisplayName() + " is platform-wide and cannot be overridden per tenant");
+            throw DomainException.badRequest(kind.getDisplayName() + " is platform-wide and cannot be overridden per tenant");
         }
         return kind;
     }

@@ -1,4 +1,4 @@
-package com.ayush.chat.admin;
+package com.ayush.chat.audit;
 
 import com.ayush.chat.auth.Principals;
 import lombok.RequiredArgsConstructor;

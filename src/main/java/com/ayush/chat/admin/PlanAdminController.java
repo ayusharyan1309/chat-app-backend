@@ -1,5 +1,6 @@
 package com.ayush.chat.admin;
 
+import com.ayush.chat.audit.AuditService;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.tenant.Plan;
 import com.ayush.chat.tenant.PlanService;

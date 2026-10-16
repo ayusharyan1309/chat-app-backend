@@ -1,12 +1,13 @@
-package com.ayush.chat.core.config;
+package com.ayush.chat.core.connector.runtime;
 
+import com.ayush.chat.core.connector.config.ConfigScope;
+import com.ayush.chat.core.connector.config.ConnectorConfigService;
 import com.ayush.chat.core.connector.Connector;
 import com.ayush.chat.core.connector.ConnectorConfig;
-import com.ayush.chat.core.connector.ConnectorHolder;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -31,12 +32,12 @@ import java.util.function.Supplier;
 @Slf4j
 public class TenantConnectorRouter<T extends Connector> implements AutoCloseable {
 
-    private static final Duration FAILURE_BACKOFF = Duration.ofSeconds(5);
-
     private final ConnectorKind kind;
     private final ConnectorRegistry registry;
     private final ConnectorConfigService configService;
     private final Supplier<T> platformDefault;
+    private final Duration retireGrace;
+    private final Duration failureBackoff;
     private final Map<String, Optional<ConnectorHolder<T>>> tenants = new ConcurrentHashMap<>();
     private final Map<String, Failure> failures = new ConcurrentHashMap<>();
     /** ReentrantLock rather than synchronized: blocking connects must not pin virtual threads. */
@@ -46,11 +47,13 @@ public class TenantConnectorRouter<T extends Connector> implements AutoCloseable
     }
 
     public TenantConnectorRouter(ConnectorKind kind, ConnectorRegistry registry, ConnectorConfigService configService,
-                                 Supplier<T> platformDefault) {
+                                 Supplier<T> platformDefault, Duration retireGrace, Duration failureBackoff) {
         this.kind = kind;
         this.registry = registry;
         this.configService = configService;
         this.platformDefault = platformDefault;
+        this.retireGrace = retireGrace;
+        this.failureBackoff = failureBackoff;
     }
 
     public T forTenant(String tenantSlug) {
@@ -61,15 +64,11 @@ public class TenantConnectorRouter<T extends Connector> implements AutoCloseable
         return resolved.map(ConnectorHolder::get).orElseGet(platformDefault);
     }
 
-    public boolean isDedicated(String tenantSlug) {
-        return configService.tenantOverride(tenantSlug, kind).isPresent();
-    }
-
     /** One loader per tenant; other tenants are never blocked by a slow connection. */
     private Optional<ConnectorHolder<T>> load(String tenantSlug) {
         Failure failure = failures.get(tenantSlug);
         if (failure != null && Instant.now().isBefore(failure.until())) {
-            throw ApiException.unavailable(failure.message());
+            throw DomainException.unavailable(failure.message());
         }
         ReentrantLock lock = loadLocks.computeIfAbsent(tenantSlug, s -> new ReentrantLock());
         lock.lock();
@@ -89,8 +88,8 @@ public class TenantConnectorRouter<T extends Connector> implements AutoCloseable
             } catch (Exception e) {
                 String message = "Tenant " + kind.getDisplayName().toLowerCase() + " is unavailable: " + e.getMessage();
                 log.error("Dedicated {} for tenant {} failed: {}", kind.getDisplayName(), tenantSlug, e.getMessage());
-                failures.put(tenantSlug, new Failure(message, Instant.now().plus(FAILURE_BACKOFF)));
-                throw ApiException.unavailable(message);
+                failures.put(tenantSlug, new Failure(message, Instant.now().plus(failureBackoff)));
+                throw DomainException.unavailable(message);
             }
             failures.remove(tenantSlug);
             Optional<ConnectorHolder<T>> loaded = Optional.of(holder);
@@ -102,7 +101,7 @@ public class TenantConnectorRouter<T extends Connector> implements AutoCloseable
     }
 
     private ConnectorHolder<T> newHolder(String tenantSlug) {
-        return new ConnectorHolder<>(kind.getDisplayName() + "[" + tenantSlug + "]", registry, 30_000);
+        return new ConnectorHolder<>(kind.getDisplayName() + "[" + tenantSlug + "]", registry, retireGrace);
     }
 
     /** Apply a new override (connects first, outside the routing map) and persist it. */
@@ -116,7 +115,7 @@ public class TenantConnectorRouter<T extends Connector> implements AutoCloseable
             tenants.put(tenantSlug, Optional.of(holder));
         }
         failures.remove(tenantSlug);
-        configService.save(ConnectorConfigChangedEvent.tenantScope(tenantSlug), config, actor);
+        configService.save(ConfigScope.tenant(tenantSlug), config, actor);
     }
 
     public void invalidate(String tenantSlug) {

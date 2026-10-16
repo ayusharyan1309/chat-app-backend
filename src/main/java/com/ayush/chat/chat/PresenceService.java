@@ -3,8 +3,8 @@ package com.ayush.chat.chat;
 import com.ayush.chat.auth.Principals.ChatUserPrincipal;
 import com.ayush.chat.chat.event.ChatEvent;
 import com.ayush.chat.core.cluster.ClusterService;
-import com.ayush.chat.core.config.InfrastructureService;
-import com.ayush.chat.core.config.TenantConnectors;
+import com.ayush.chat.core.connector.runtime.PlatformConnectors;
+import com.ayush.chat.core.connector.runtime.TenantConnectors;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.tenant.Feature;
 import com.ayush.chat.tenant.TenantDirectory;
@@ -38,7 +38,7 @@ public class PresenceService {
     private static final Duration TTL = Duration.ofSeconds(60);
     private static final int MAX_WATCHED = 500;
 
-    private final InfrastructureService infrastructure;
+    private final PlatformConnectors infrastructure;
     private final TenantConnectors connectors;
     private final ClusterService cluster;
     private final RealtimeGateway gateway;

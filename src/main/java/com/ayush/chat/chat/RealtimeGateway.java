@@ -3,7 +3,7 @@ package com.ayush.chat.chat;
 import com.ayush.chat.auth.Principals;
 import com.ayush.chat.chat.event.ChatEvent;
 import com.ayush.chat.chat.event.DomainEvent;
-import com.ayush.chat.core.config.InfrastructureService;
+import com.ayush.chat.core.connector.runtime.PlatformConnectors;
 import com.ayush.chat.core.config.PlatformProperties;
 import com.ayush.chat.core.util.Json;
 import jakarta.annotation.PostConstruct;
@@ -28,7 +28,7 @@ public class RealtimeGateway {
 
     public static final String USER_QUEUE = "/queue/events";
 
-    private final InfrastructureService infrastructure;
+    private final PlatformConnectors infrastructure;
     private final SimpMessagingTemplate messaging;
     private final MetricsService metrics;
     private final PlatformProperties properties;

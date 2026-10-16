@@ -1,6 +1,6 @@
 package com.ayush.chat;
 
-import com.ayush.chat.core.config.InfrastructureService;
+import com.ayush.chat.core.connector.runtime.PlatformConnectors;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ChatApplicationTests {
 
     @Autowired
-    InfrastructureService infrastructure;
+    PlatformConnectors infrastructure;
 
     @Test
     void contextLoadsWithZeroExternalDependencies() {

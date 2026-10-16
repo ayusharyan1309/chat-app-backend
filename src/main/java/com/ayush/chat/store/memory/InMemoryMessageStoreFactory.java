@@ -3,6 +3,7 @@ package com.ayush.chat.store.memory;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.store.MessageStore;
 import org.springframework.stereotype.Component;
@@ -16,7 +17,7 @@ public class InMemoryMessageStoreFactory implements ConnectorFactory<MessageStor
     public ConnectorDescriptor descriptor() {
         return new ConnectorDescriptor(ConnectorKind.MESSAGE_STORE, "memory", "In-memory",
                 "Non-durable store for demos and tests. Data is lost on restart.",
-                "Embedded", "GA", List.of(), List.of());
+                "Embedded", Maturity.GA, List.of(), List.of());
     }
 
     @Override

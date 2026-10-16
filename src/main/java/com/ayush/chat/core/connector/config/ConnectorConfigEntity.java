@@ -1,7 +1,10 @@
-package com.ayush.chat.core.config;
+package com.ayush.chat.core.connector.config;
 
+import com.ayush.chat.core.connector.ConnectorKind;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -12,7 +15,7 @@ import lombok.Setter;
 import java.time.Instant;
 
 /**
- * A persisted connector configuration for one scope ("platform" or "tenant:{slug}") and kind.
+ * A persisted connector configuration for one {@link ConfigScope} and kind.
  * Secret values inside {@link #settingsJson} are AES-GCM encrypted.
  */
 @Getter
@@ -28,8 +31,9 @@ public class ConnectorConfigEntity {
     @Column(name = "scope_key", nullable = false)
     private String scopeKey;
 
+    @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    private String kind;
+    private ConnectorKind kind;
 
     @Column(nullable = false)
     private String provider;
@@ -45,4 +49,8 @@ public class ConnectorConfigEntity {
 
     @Column(name = "updated_by")
     private String updatedBy;
+
+    public ConfigScope scope() {
+        return ConfigScope.parse(scopeKey);
+    }
 }

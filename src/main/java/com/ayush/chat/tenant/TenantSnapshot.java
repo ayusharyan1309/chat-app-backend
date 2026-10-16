@@ -1,6 +1,6 @@
 package com.ayush.chat.tenant;
 
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 
 import java.time.Instant;
 import java.util.Set;
@@ -33,13 +33,13 @@ public record TenantSnapshot(
 
     public void require(Feature feature) {
         if (!has(feature)) {
-            throw ApiException.featureDisabled(feature.getId());
+            throw DomainException.featureDisabled(feature.getId());
         }
     }
 
     public void requireUsable() {
         if (!isUsable()) {
-            throw ApiException.forbidden("Tenant '" + slug + "' is " + status.name().toLowerCase());
+            throw DomainException.forbidden("Tenant '" + slug + "' is " + status.name().toLowerCase());
         }
     }
 }

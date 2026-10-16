@@ -1,7 +1,7 @@
 package com.ayush.chat.tenant;
 
 import com.ayush.chat.core.crypto.SecretCipher;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.tenant.TenantRepositories.PlanRepository;
 import com.ayush.chat.tenant.TenantRepositories.TenantRepository;
@@ -36,9 +36,9 @@ public class TenantDirectory {
     /** Snapshot for a tenant, or 404. Does not check status — use {@link #requireUsable}. */
     public TenantSnapshot get(String slug) {
         if (slug == null || slug.isBlank()) {
-            throw ApiException.badRequest("Tenant is required");
+            throw DomainException.badRequest("Tenant is required");
         }
-        return find(slug).orElseThrow(() -> ApiException.notFound("Tenant '" + slug + "'"));
+        return find(slug).orElseThrow(() -> DomainException.notFound("Tenant '" + slug + "'"));
     }
 
     /** Only hits are cached; a miss is re-checked next time so a just-created tenant is visible at once. */

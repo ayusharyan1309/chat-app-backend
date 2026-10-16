@@ -1,11 +1,13 @@
 package com.ayush.chat.admin;
 
+import com.ayush.chat.audit.AuditService;
 import com.ayush.chat.chat.MetricsService;
 import com.ayush.chat.core.cluster.ClusterService;
-import com.ayush.chat.core.config.ConnectorConfigChangedEvent;
-import com.ayush.chat.core.config.ConnectorConfigService;
-import com.ayush.chat.core.config.InfrastructureService;
-import com.ayush.chat.core.config.PlatformProperties;
+import com.ayush.chat.core.connector.config.ConfigScope;
+import com.ayush.chat.core.connector.config.ConfigSource;
+import com.ayush.chat.core.connector.config.ConnectorConfigService;
+import com.ayush.chat.core.connector.runtime.PlatformConnectors;
+import com.ayush.chat.core.config.BuildVersion;
 import com.ayush.chat.core.connector.ConnectorConfig;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorKind;
@@ -42,13 +44,13 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class SystemController {
 
-    private final InfrastructureService infrastructure;
+    private final PlatformConnectors infrastructure;
     private final ConnectorRegistry registry;
     private final ConnectorConfigService configService;
     private final ClusterService cluster;
     private final MetricsService metrics;
     private final TenantRepository tenants;
-    private final PlatformProperties properties;
+    private final BuildVersion buildVersion;
     private final AuditService audit;
 
     public record ConnectorRequest(String provider, Map<String, Object> settings) {
@@ -58,19 +60,19 @@ public class SystemController {
                               List<ConnectorDescriptor> providers) {
     }
 
-    public record ComponentView(String kind, String displayName, String provider, String providerName, String source,
+    public record ComponentView(String kind, String displayName, String provider, String providerName, ConfigSource source,
                                 boolean healthy, String message, Long latencyMs, Map<String, Object> details,
                                 String lastError) {
     }
 
-    public record ConnectorState(String kind, String provider, Map<String, Object> settings, String source, Long version,
+    public record ConnectorState(String kind, String provider, Map<String, Object> settings, ConfigSource source, Long version,
                                  Instant updatedAt, String updatedBy, HealthStatus health, String lastError) {
     }
 
     @GetMapping("/system/overview")
     public Map<String, Object> overview() {
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("version", properties.getVersion());
+        out.put("version", buildVersion.get());
         out.put("nodeId", cluster.getNodeId());
         out.put("startedAt", cluster.getStartedAt());
         out.put("uptimeSeconds", Duration.between(cluster.getStartedAt(), Instant.now()).toSeconds());
@@ -158,7 +160,7 @@ public class SystemController {
     }
 
     private ComponentView component(ConnectorKind kind) {
-        InfrastructureService.ComponentStatus s = infrastructure.status(kind);
+        PlatformConnectors.ComponentStatus s = infrastructure.status(kind);
         String providerName = s.config().provider();
         try {
             providerName = registry.descriptor(kind, s.config().provider()).displayName();
@@ -170,9 +172,9 @@ public class SystemController {
     }
 
     private ConnectorState state(ConnectorKind kind) {
-        InfrastructureService.ComponentStatus s = infrastructure.status(kind);
+        PlatformConnectors.ComponentStatus s = infrastructure.status(kind);
         ConnectorConfig config = s.config();
-        var stored = configService.stored(ConnectorConfigChangedEvent.PLATFORM, kind);
+        var stored = configService.stored(ConfigScope.PLATFORM, kind);
         return new ConnectorState(kind.slug(), config.provider(), maskSafely(config), s.source(),
                 stored.map(ConnectorConfigService.StoredConfig::version).orElse(null),
                 stored.map(ConnectorConfigService.StoredConfig::updatedAt).orElse(null),

@@ -1,6 +1,6 @@
 package com.ayush.chat.push.webhook;
 
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.net.OutboundUrlPolicy;
 import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorConfig;
@@ -223,9 +223,9 @@ class WebhookPushSenderTest {
 
     @Test
     void invalidSettingsFailFast() {
-        assertThatThrownBy(() -> create(Map.of("url", "ftp://example.com/hook"))).isInstanceOfAny(IllegalArgumentException.class, ApiException.class);
-        assertThatThrownBy(() -> create(Map.of("url", "not a url"))).isInstanceOfAny(IllegalArgumentException.class, ApiException.class);
-        assertThatThrownBy(() -> create(Map.of("url", "/relative/path"))).isInstanceOfAny(IllegalArgumentException.class, ApiException.class);
+        assertThatThrownBy(() -> create(Map.of("url", "ftp://example.com/hook"))).isInstanceOfAny(IllegalArgumentException.class, DomainException.class);
+        assertThatThrownBy(() -> create(Map.of("url", "not a url"))).isInstanceOfAny(IllegalArgumentException.class, DomainException.class);
+        assertThatThrownBy(() -> create(Map.of("url", "/relative/path"))).isInstanceOfAny(IllegalArgumentException.class, DomainException.class);
         assertThatThrownBy(() -> create(Map.of("url", url(), "timeoutMs", 0))).isInstanceOf(IllegalArgumentException.class);
 
         ConnectorRegistry registry = new ConnectorRegistry(List.of(factory));

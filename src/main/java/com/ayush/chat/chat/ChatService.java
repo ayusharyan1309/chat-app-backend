@@ -6,8 +6,9 @@ import com.ayush.chat.chat.Views.ParticipantView;
 import com.ayush.chat.chat.Views.UserView;
 import com.ayush.chat.chat.event.ChatEvent;
 import com.ayush.chat.chat.event.DomainEvent;
-import com.ayush.chat.core.config.TenantConnectors;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.connector.runtime.TenantConnectors;
+import com.ayush.chat.core.cluster.DistributedLock;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.util.Ids;
 import com.ayush.chat.store.MessageStore;
 import com.ayush.chat.store.model.AppendResult;
@@ -60,7 +61,7 @@ public class ChatService {
     private final RealtimeGateway gateway;
     private final PresenceService presence;
     private final MetricsService metrics;
-    private final MutationLock locks;
+    private final DistributedLock locks;
 
     private final Cache<String, Boolean> activeUsers = Caffeine.newBuilder()
             .expireAfterWrite(Duration.ofSeconds(30)).maximumSize(500_000).build();
@@ -105,14 +106,14 @@ public class ChatService {
     public UserView upsertUser(String slug, UserInput input) {
         Ctx c = ctx(slug);
         if (input.id() == null || !USER_ID.matcher(input.id()).matches()) {
-            throw ApiException.badRequest("id must be 1-128 chars of letters, digits and _ . @ : + -");
+            throw DomainException.badRequest("id must be 1-128 chars of letters, digits and _ . @ : + -");
         }
         validateProfile(input.displayName(), input.email(), input.phone(), input.avatarUrl(), input.about());
         Optional<ChatUser> existing = c.store().findUser(c.slug(), input.id());
         if (existing.isEmpty()) {
             Long max = c.tenant().limits().maxUsers();
             if (max != null && c.store().countUsers(c.slug()) >= max) {
-                throw ApiException.quotaExceeded("User limit of " + max + " reached for this tenant");
+                throw DomainException.quotaExceeded("User limit of " + max + " reached for this tenant");
             }
         }
         Instant now = Instant.now();
@@ -137,7 +138,7 @@ public class ChatService {
         Optional<ChatUser> existing = c.store().findUser(slug, userId);
         if (existing.isPresent()) {
             if (existing.get().isDeactivated()) {
-                throw ApiException.forbidden("User is deactivated");
+                throw DomainException.forbidden("User is deactivated");
             }
             return existing.get();
         }
@@ -147,7 +148,7 @@ public class ChatService {
 
     public void deactivateUser(String slug, String userId) {
         Ctx c = ctx(slug);
-        ChatUser user = c.store().findUser(slug, userId).orElseThrow(() -> ApiException.notFound("User '" + userId + "'"));
+        ChatUser user = c.store().findUser(slug, userId).orElseThrow(() -> DomainException.notFound("User '" + userId + "'"));
         c.store().upsertUser(user.toBuilder().deactivated(true).pushTokens(new LinkedHashSet<>()).updatedAt(Instant.now()).build());
         activeUsers.put(key(slug, userId), false);
         gateway.publishControl(new RealtimeGateway.ControlMessage("user.deactivated", slug, userId));
@@ -158,7 +159,7 @@ public class ChatService {
         Boolean active = activeUsers.get(key(slug, userId), k -> connectors.store(slug).findUser(slug, userId)
                 .map(u -> !u.isDeactivated()).orElse(false));
         if (!Boolean.TRUE.equals(active)) {
-            throw ApiException.forbidden("User '" + userId + "' does not exist or is deactivated");
+            throw DomainException.forbidden("User '" + userId + "' does not exist or is deactivated");
         }
     }
 
@@ -191,13 +192,13 @@ public class ChatService {
 
     public UserView getUser(String slug, String userId) {
         Ctx c = ctx(slug);
-        return userView(c, c.store().findUser(slug, userId).orElseThrow(() -> ApiException.notFound("User '" + userId + "'")));
+        return userView(c, c.store().findUser(slug, userId).orElseThrow(() -> DomainException.notFound("User '" + userId + "'")));
     }
 
     public UserView updateProfile(String slug, String userId, String displayName, String avatarUrl, String about) {
         validateProfile(displayName, null, null, avatarUrl, about);
         Ctx c = ctx(slug);
-        ChatUser user = c.store().findUser(slug, userId).orElseThrow(() -> ApiException.notFound("User"));
+        ChatUser user = c.store().findUser(slug, userId).orElseThrow(() -> DomainException.notFound("User"));
         ChatUser updated = c.store().upsertUser(user.toBuilder()
                 .displayName(displayName != null && !displayName.isBlank() ? displayName.trim() : user.getDisplayName())
                 .avatarUrl(avatarUrl != null ? avatarUrl : user.getAvatarUrl())
@@ -208,10 +209,10 @@ public class ChatService {
 
     public void addDevice(String slug, String userId, String token) {
         if (token == null || token.isBlank() || token.length() > 4096) {
-            throw ApiException.badRequest("A device token is required");
+            throw DomainException.badRequest("A device token is required");
         }
         Ctx c = ctx(slug);
-        ChatUser user = c.store().findUser(slug, userId).orElseThrow(() -> ApiException.notFound("User"));
+        ChatUser user = c.store().findUser(slug, userId).orElseThrow(() -> DomainException.notFound("User"));
         Set<String> tokens = new LinkedHashSet<>(user.getPushTokens());
         tokens.add(token);
         while (tokens.size() > 10) {
@@ -233,7 +234,7 @@ public class ChatService {
     public List<UserView> searchUsers(String slug, String viewerId, String query, int offset, int limit, boolean adminView) {
         Ctx c = ctx(slug);
         if (!adminView && !Boolean.TRUE.equals(c.tenant().settings().allowUserSearch())) {
-            throw ApiException.forbidden("User search is disabled for this tenant");
+            throw DomainException.forbidden("User search is disabled for this tenant");
         }
         List<ChatUser> users = c.store().searchUsers(slug, query, Math.max(0, offset), clamp(limit, 1, MAX_PAGE));
         List<ChatUser> visible = users.stream()
@@ -255,11 +256,11 @@ public class ChatService {
 
     public void setBlocked(String slug, String me, String other, boolean blocked) {
         if (me.equals(other)) {
-            throw ApiException.badRequest("You cannot block yourself");
+            throw DomainException.badRequest("You cannot block yourself");
         }
         Ctx c = ctx(slug);
         if (blocked && c.store().findUser(slug, other).isEmpty()) {
-            throw ApiException.notFound("User '" + other + "'");
+            throw DomainException.notFound("User '" + other + "'");
         }
         c.store().setBlocked(slug, me, other, blocked);
         blockCache.invalidate(slug + "|" + me + "|" + other);
@@ -271,10 +272,10 @@ public class ChatService {
     public ConversationView openDirect(String slug, String me, String otherId) {
         Ctx c = ctx(slug);
         if (otherId == null || otherId.equals(me)) {
-            throw ApiException.badRequest("userId must be another user");
+            throw DomainException.badRequest("userId must be another user");
         }
         ChatUser other = c.store().findUser(slug, otherId).filter(u -> !u.isDeactivated())
-                .orElseThrow(() -> ApiException.notFound("User '" + otherId + "'"));
+                .orElseThrow(() -> DomainException.notFound("User '" + otherId + "'"));
         String directKey = Conversation.directKey(me, other.getId());
         Optional<Conversation> existing = c.store().findDirectConversation(slug, directKey);
         Conversation conversation = existing.orElseGet(() -> {
@@ -298,7 +299,7 @@ public class ChatService {
         Ctx c = ctx(slug);
         c.tenant().require(Feature.GROUP_CHAT);
         if (title == null || title.isBlank() || title.length() > 255) {
-            throw ApiException.badRequest("title is required (max 255 characters)");
+            throw DomainException.badRequest("title is required (max 255 characters)");
         }
         maxLength("description", description, 1024);
         maxLength("avatarUrl", avatarUrl, 1024);
@@ -453,11 +454,11 @@ public class ChatService {
         requireGroup(conversation);
         requireAdmin(requireMember(c, conversationId, me));
         if (role == null || role == Participant.Role.OWNER) {
-            throw ApiException.badRequest("role must be ADMIN or MEMBER");
+            throw DomainException.badRequest("role must be ADMIN or MEMBER");
         }
         Participant target = requireMember(c, conversationId, userId);
         if (target.getRole() == Participant.Role.OWNER) {
-            throw ApiException.forbidden("The group owner's role cannot be changed");
+            throw DomainException.forbidden("The group owner's role cannot be changed");
         }
         c.store().upsertParticipant(target.toBuilder().role(role).updatedAt(Instant.now()).build());
         participantCache.invalidate(key(slug, conversationId));
@@ -482,7 +483,7 @@ public class ChatService {
         if (!leaving) {
             requireAdmin(actor);
             if (target.getRole() == Participant.Role.OWNER) {
-                throw ApiException.forbidden("The group owner cannot be removed");
+                throw DomainException.forbidden("The group owner cannot be removed");
             }
         }
         Instant now = Instant.now();
@@ -515,20 +516,20 @@ public class ChatService {
         // One fresh membership read serves both the authorisation check and the fan-out.
         List<Participant> members = c.store().listParticipants(slug, conversationId);
         if (members.stream().noneMatch(p -> p.getUserId().equals(me))) {
-            throw ApiException.notFound("Conversation");
+            throw DomainException.notFound("Conversation");
         }
         ChatMessage.Type type = input.type() == null ? ChatMessage.Type.TEXT : input.type();
         if (type == ChatMessage.Type.SYSTEM) {
-            throw ApiException.badRequest("SYSTEM messages can only be sent through the server API");
+            throw DomainException.badRequest("SYSTEM messages can only be sent through the server API");
         }
         validateContent(c, type, input);
         if (conversation.getType() == Conversation.Type.DIRECT) {
             String other = peerId(conversation, me).orElseThrow();
             if (blocked(c, other, me)) {
-                throw ApiException.forbidden("You can't send messages to this user");
+                throw DomainException.forbidden("You can't send messages to this user");
             }
             if (blocked(c, me, other)) {
-                throw ApiException.forbidden("Unblock this user to send messages");
+                throw DomainException.forbidden("Unblock this user to send messages");
             }
         }
         return append(c, conversation, members, me, type, input, true);
@@ -555,7 +556,7 @@ public class ChatService {
         Conversation conversation = conversation(c, conversationId);
         List<Participant> members = c.store().listParticipants(slug, conversationId);
         if (members.stream().noneMatch(p -> p.getUserId().equals(senderId))) {
-            throw ApiException.notFound("Conversation");
+            throw DomainException.notFound("Conversation");
         }
         ChatMessage.Type type = input.type() == null ? ChatMessage.Type.TEXT : input.type();
         validateContent(c, type, input);
@@ -570,7 +571,7 @@ public class ChatService {
             boolean visible = c.store().findMessage(c.slug(), conversation.getId(), input.replyToId())
                     .filter(m -> m.getSeq() > floor).isPresent();
             if (!visible) {
-                throw ApiException.badRequest("replyToId does not reference a message in this conversation");
+                throw DomainException.badRequest("replyToId does not reference a message in this conversation");
             }
         }
         if (metered) {
@@ -578,12 +579,12 @@ public class ChatService {
         }
         String clientMsgId = input.clientMsgId() == null || input.clientMsgId().isBlank() ? Ids.newId() : input.clientMsgId();
         if (clientMsgId.length() > 128) {
-            throw ApiException.badRequest("clientMsgId must be at most 128 characters");
+            throw DomainException.badRequest("clientMsgId must be at most 128 characters");
         }
         if (metered) {
             try {
                 usage.ensureMessageQuota(c.tenant());
-            } catch (ApiException quotaExceeded) {
+            } catch (DomainException quotaExceeded) {
                 // A retry of a message accepted before the quota ran out must still be acknowledged.
                 Optional<ChatMessage> accepted = input.clientMsgId() == null ? Optional.empty()
                         : c.store().listMessages(c.slug(), conversation.getId(), null, null, 100).stream()
@@ -633,17 +634,17 @@ public class ChatService {
         return locks.withLock(messageLock(c, conversationId, messageId), () -> {
             ChatMessage message = visibleMessage(c, self, conversationId, messageId);
             if (message.getType() == ChatMessage.Type.SYSTEM) {
-                throw ApiException.forbidden("System notices cannot be edited");
+                throw DomainException.forbidden("System notices cannot be edited");
             }
             if (!me.equals(message.getSenderId())) {
-                throw ApiException.forbidden("You can only edit your own messages");
+                throw DomainException.forbidden("You can only edit your own messages");
             }
             if (message.isDeleted()) {
-                throw ApiException.badRequest("Deleted messages cannot be edited");
+                throw DomainException.badRequest("Deleted messages cannot be edited");
             }
             int window = c.tenant().settings().editWindowMinutes();
             if (window > 0 && message.getCreatedAt().isBefore(Instant.now().minus(Duration.ofMinutes(window)))) {
-                throw ApiException.forbidden("Messages can only be edited within " + window + " minutes");
+                throw DomainException.forbidden("Messages can only be edited within " + window + " minutes");
             }
             message.setContent(content);
             message.setEdited(true);
@@ -660,10 +661,10 @@ public class ChatService {
         return locks.withLock(messageLock(c, conversationId, messageId), () -> {
             ChatMessage message = visibleMessage(c, self, conversationId, messageId);
             if (message.getType() == ChatMessage.Type.SYSTEM) {
-                throw ApiException.forbidden("System notices cannot be deleted");
+                throw DomainException.forbidden("System notices cannot be deleted");
             }
             if (!me.equals(message.getSenderId()) && !self.isAdmin()) {
-                throw ApiException.forbidden("You can only delete your own messages");
+                throw DomainException.forbidden("You can only delete your own messages");
             }
             if (message.isDeleted()) {
                 return MessageView.of(message);
@@ -683,12 +684,12 @@ public class ChatService {
         c.tenant().require(Feature.MESSAGE_REACTIONS);
         Participant self = requireMember(c, conversationId, me);
         if (emoji != null && (emoji.isBlank() || emoji.codePointCount(0, emoji.length()) > 8)) {
-            throw ApiException.badRequest("emoji must be a short emoji string");
+            throw DomainException.badRequest("emoji must be a short emoji string");
         }
         return locks.withLock(messageLock(c, conversationId, messageId), () -> {
             ChatMessage message = visibleMessage(c, self, conversationId, messageId);
             if (message.isDeleted()) {
-                throw ApiException.badRequest("Cannot react to a deleted message");
+                throw DomainException.badRequest("Cannot react to a deleted message");
             }
             if (emoji == null) {
                 message.removeReaction(me);
@@ -704,7 +705,7 @@ public class ChatService {
     private ChatMessage visibleMessage(Ctx c, Participant self, String conversationId, String messageId) {
         return c.store().findMessage(c.slug(), conversationId, messageId)
                 .filter(m -> m.getSeq() > self.getJoinedSeq())
-                .orElseThrow(() -> ApiException.notFound("Message"));
+                .orElseThrow(() -> DomainException.notFound("Message"));
     }
 
     private static String membersLock(String slug, String conversationId) {
@@ -773,7 +774,7 @@ public class ChatService {
         }
         List<Participant> members = participantsCached(c, conversationId);
         if (members.stream().noneMatch(p -> p.getUserId().equals(me))) {
-            throw ApiException.forbidden("Not a member of this conversation");
+            throw DomainException.forbidden("Not a member of this conversation");
         }
         List<String> others = members.stream().map(Participant::getUserId).filter(id -> !id.equals(me)).toList();
         gateway.toUsers(slug, others, ChatEvent.of(ChatEvent.TYPING, conversationId, new TypingView(me, typing)));
@@ -787,35 +788,35 @@ public class ChatService {
 
     private Conversation conversation(Ctx c, String conversationId) {
         return c.store().findConversation(c.slug(), conversationId)
-                .orElseThrow(() -> ApiException.notFound("Conversation"));
+                .orElseThrow(() -> DomainException.notFound("Conversation"));
     }
 
     private ChatMessage message(Ctx c, String conversationId, String messageId) {
         return c.store().findMessage(c.slug(), conversationId, messageId)
-                .orElseThrow(() -> ApiException.notFound("Message"));
+                .orElseThrow(() -> DomainException.notFound("Message"));
     }
 
     private Participant requireMember(Ctx c, String conversationId, String userId) {
         return c.store().findParticipant(c.slug(), conversationId, userId).filter(Participant::isActive)
-                .orElseThrow(() -> ApiException.notFound("Conversation"));
+                .orElseThrow(() -> DomainException.notFound("Conversation"));
     }
 
     private static void requireAdmin(Participant p) {
         if (!p.isAdmin()) {
-            throw ApiException.forbidden("Only group admins can do this");
+            throw DomainException.forbidden("Only group admins can do this");
         }
     }
 
     private static void requireGroup(Conversation conversation) {
         if (conversation.getType() != Conversation.Type.GROUP) {
-            throw ApiException.badRequest("This operation is only available for groups");
+            throw DomainException.badRequest("This operation is only available for groups");
         }
     }
 
     private void checkGroupSize(Ctx c, int size) {
         Integer max = c.tenant().limits().maxGroupSize();
         if (max != null && size > max) {
-            throw ApiException.quotaExceeded("Groups are limited to " + max + " members on this plan");
+            throw DomainException.quotaExceeded("Groups are limited to " + max + " members on this plan");
         }
     }
 
@@ -827,7 +828,7 @@ public class ChatService {
                 .map(ChatUser::getId).collect(Collectors.toSet());
         List<String> missing = ids.stream().filter(id -> !found.contains(id)).toList();
         if (!missing.isEmpty()) {
-            throw ApiException.badRequest("Unknown or deactivated users: " + String.join(", ", missing));
+            throw DomainException.badRequest("Unknown or deactivated users: " + String.join(", ", missing));
         }
     }
 
@@ -850,7 +851,7 @@ public class ChatService {
             case LOCATION, CONTACT -> {
                 rejectAttachment(input, type);
                 if (input.metadata() == null || input.metadata().isEmpty()) {
-                    throw ApiException.badRequest(type + " messages carry their payload in metadata");
+                    throw DomainException.badRequest(type + " messages carry their payload in metadata");
                 }
                 validateText(c, input.content(), false);
             }
@@ -859,26 +860,26 @@ public class ChatService {
 
     private static void rejectAttachment(SendInput input, ChatMessage.Type type) {
         if (input.attachment() != null) {
-            throw ApiException.badRequest(type + " messages cannot carry an attachment; use IMAGE, VIDEO, AUDIO or FILE");
+            throw DomainException.badRequest(type + " messages cannot carry an attachment; use IMAGE, VIDEO, AUDIO or FILE");
         }
     }
 
     private static void requireAttachment(SendInput input) {
         if (input.attachment() == null || input.attachment().getUrl() == null) {
-            throw ApiException.badRequest("This message type requires an attachment with a url");
+            throw DomainException.badRequest("This message type requires an attachment with a url");
         }
     }
 
     private void validateText(Ctx c, String content, boolean required) {
         if (content == null || content.isBlank()) {
             if (required) {
-                throw ApiException.badRequest("content is required");
+                throw DomainException.badRequest("content is required");
             }
             return;
         }
         int max = c.tenant().settings().maxMessageLength();
         if (content.length() > max) {
-            throw ApiException.badRequest("Message exceeds the maximum length of " + max + " characters");
+            throw DomainException.badRequest("Message exceeds the maximum length of " + max + " characters");
         }
     }
 
@@ -986,7 +987,7 @@ public class ChatService {
     /** Field limits match the store schema; violations are a 400, never a database error. */
     private static String maxLength(String field, String value, int max) {
         if (value != null && value.length() > max) {
-            throw ApiException.badRequest(field + " must be at most " + max + " characters");
+            throw DomainException.badRequest(field + " must be at most " + max + " characters");
         }
         return value;
     }

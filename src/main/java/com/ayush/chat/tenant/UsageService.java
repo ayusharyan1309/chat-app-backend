@@ -1,8 +1,8 @@
 package com.ayush.chat.tenant;
 
 import com.ayush.chat.cache.CacheStore;
-import com.ayush.chat.core.config.InfrastructureService;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.connector.runtime.PlatformConnectors;
+import com.ayush.chat.core.error.DomainException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -36,7 +36,7 @@ public class UsageService {
     private static final int MEDIA_BYTES = 1;
     private static final int API_CALLS = 2;
 
-    private final InfrastructureService infrastructure;
+    private final PlatformConnectors infrastructure;
     private final JdbcTemplate jdbc;
 
     private final Map<String, AtomicLongArray> pending = new ConcurrentHashMap<>();
@@ -54,7 +54,7 @@ public class UsageService {
     public void ensureMessageQuota(TenantSnapshot tenant) {
         Long limit = tenant.limits().maxMessagesPerDay();
         if (limit != null && messagesToday(tenant.slug()) >= limit) {
-            throw ApiException.quotaExceeded("Daily message quota of " + limit + " reached for this tenant");
+            throw DomainException.quotaExceeded("Daily message quota of " + limit + " reached for this tenant");
         }
     }
 
@@ -77,7 +77,7 @@ public class UsageService {
         long count = infrastructure.cache().increment("rate:" + tenant.slug() + ":" + userId + ":" + second, 1,
                 Duration.ofSeconds(3));
         if (count > perSecond) {
-            throw ApiException.rateLimited("Slow down: at most " + perSecond + " messages per second");
+            throw DomainException.rateLimited("Slow down: at most " + perSecond + " messages per second");
         }
     }
 
@@ -92,7 +92,7 @@ public class UsageService {
         Long limitMb = tenant.limits().maxStorageMb();
         if (limitMb != null && used > limitMb * 1024 * 1024) {
             cache.increment(key, -bytes, null);
-            throw ApiException.quotaExceeded("Media storage quota of " + limitMb + " MB reached for this tenant");
+            throw DomainException.quotaExceeded("Media storage quota of " + limitMb + " MB reached for this tenant");
         }
         record(tenant.slug(), MEDIA_BYTES, bytes);
     }

@@ -4,7 +4,7 @@ import com.ayush.chat.auth.Principals.ChatUserPrincipal;
 import com.ayush.chat.chat.ChatService;
 import com.ayush.chat.chat.Views.ConversationView;
 import com.ayush.chat.chat.Views.MessageView;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.store.model.ChatMessage;
 import com.ayush.chat.store.model.Participant;
 import lombok.RequiredArgsConstructor;
@@ -157,7 +157,7 @@ public class ConversationController {
     public MessageView react(@AuthenticationPrincipal ChatUserPrincipal me, @PathVariable String id,
                              @PathVariable String messageId, @RequestBody ReactionRequest request) {
         if (request.emoji() == null) {
-            throw ApiException.badRequest("emoji is required");
+            throw DomainException.badRequest("emoji is required");
         }
         return chat.react(me.tenant(), me.userId(), id, messageId, request.emoji());
     }
@@ -190,7 +190,7 @@ public class ConversationController {
 
     private static long requireSeq(SeqRequest request) {
         if (request == null || request.seq() == null || request.seq() < 0) {
-            throw ApiException.badRequest("seq is required");
+            throw DomainException.badRequest("seq is required");
         }
         return request.seq();
     }

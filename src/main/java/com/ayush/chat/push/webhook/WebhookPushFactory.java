@@ -4,6 +4,7 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.core.net.OutboundUrlPolicy;
 import com.ayush.chat.push.PushSender;
@@ -19,7 +20,7 @@ public class WebhookPushFactory implements ConnectorFactory<PushSender> {
     public ConnectorDescriptor descriptor() {
         return new ConnectorDescriptor(ConnectorKind.PUSH, "webhook", "Webhook",
                 "POST each notification as signed JSON to your own push service (APNs, OneSignal, ...).",
-                "HTTP", "GA", List.of(),
+                "HTTP", Maturity.GA, List.of(),
                 List.of(ConfigField.of("url", "Endpoint URL").url().required()
                                 .placeholder("https://push.example.com/chat")
                                 .description("Receives POST application/json; any 2xx counts as delivered").build(),

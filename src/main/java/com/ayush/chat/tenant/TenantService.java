@@ -1,9 +1,9 @@
 package com.ayush.chat.tenant;
 
-import com.ayush.chat.core.config.ConnectorConfigChangedEvent;
-import com.ayush.chat.core.config.ConnectorConfigService;
+import com.ayush.chat.core.connector.config.ConfigScope;
+import com.ayush.chat.core.connector.config.ConnectorConfigService;
 import com.ayush.chat.core.crypto.SecretCipher;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.net.OutboundUrlPolicy;
 import com.ayush.chat.core.util.Json;
 import com.ayush.chat.tenant.TenantRepositories.PlanRepository;
@@ -69,7 +69,7 @@ public class TenantService {
     public Tenant get(String slug) {
         Tenant tenant = tenants.findBySlugWithFeatures(slug)
                 .filter(t -> t.getStatus() != Tenant.Status.DELETED)
-                .orElseThrow(() -> ApiException.notFound("Tenant '" + slug + "'"));
+                .orElseThrow(() -> DomainException.notFound("Tenant '" + slug + "'"));
         tenant.getFeatureOverrides().size();
         return tenant;
     }
@@ -84,17 +84,17 @@ public class TenantService {
     @Transactional
     public Tenant create(TenantInput input) {
         if (input.name() == null || input.name().isBlank()) {
-            throw ApiException.badRequest("name is required");
+            throw DomainException.badRequest("name is required");
         }
         String slug = input.slug() == null || input.slug().isBlank() ? uniqueSlug(input.name()) : input.slug().trim();
         if (!SLUG.matcher(slug).matches()) {
-            throw ApiException.badRequest("slug must be 2-48 chars: lowercase letters, digits and dashes");
+            throw DomainException.badRequest("slug must be 2-48 chars: lowercase letters, digits and dashes");
         }
         if (tenants.existsBySlug(slug)) {
-            throw ApiException.conflict("Tenant slug '" + slug + "' is already taken");
+            throw DomainException.conflict("Tenant slug '" + slug + "' is already taken");
         }
         Plan plan = input.planCode() == null || input.planCode().isBlank()
-                ? plans.findFirstByDefaultPlanTrue().orElseThrow(() -> ApiException.badRequest("No default plan configured"))
+                ? plans.findFirstByDefaultPlanTrue().orElseThrow(() -> DomainException.badRequest("No default plan configured"))
                 : activePlan(input.planCode());
         Tenant tenant = new Tenant();
         tenant.setSlug(slug);
@@ -157,7 +157,7 @@ public class TenantService {
         tenant.setStatus(Tenant.Status.DELETED);
         tenant.setDeletedAt(Instant.now());
         tenants.save(tenant);
-        connectorConfigs.deleteScope(ConnectorConfigChangedEvent.tenantScope(slug));
+        connectorConfigs.deleteScope(ConfigScope.tenant(slug));
         changed(slug);
     }
 
@@ -167,9 +167,9 @@ public class TenantService {
         tenant.getFeatureOverrides().clear();
         tenants.saveAndFlush(tenant);
         overrides.forEach((id, enabled) -> {
-            Feature feature = Feature.fromId(id).orElseThrow(() -> ApiException.badRequest("Unknown feature: " + id));
+            Feature feature = Feature.fromId(id).orElseThrow(() -> DomainException.badRequest("Unknown feature: " + id));
             if (!feature.isToggleable()) {
-                throw ApiException.badRequest("Feature '" + id + "' cannot be toggled (" + feature.getStatus() + ")");
+                throw DomainException.badRequest("Feature '" + id + "' cannot be toggled (" + feature.getStatus() + ")");
             }
             if (enabled == null) {
                 return;
@@ -204,20 +204,20 @@ public class TenantService {
         TenantConfig.External in = input.external() != null ? input.external() : TenantConfig.External.NONE;
         String type = in.typeOrNone();
         if (!List.of("none", "firebase", "jwt").contains(type)) {
-            throw ApiException.badRequest("external.type must be none, firebase or jwt");
+            throw DomainException.badRequest("external.type must be none, firebase or jwt");
         }
         if (!type.equals("none") && !directory.toSnapshot(tenant).has(Feature.EXTERNAL_AUTH)) {
-            throw ApiException.featureDisabled(Feature.EXTERNAL_AUTH.getId());
+            throw DomainException.featureDisabled(Feature.EXTERNAL_AUTH.getId());
         }
         if (type.equals("firebase") && blank(in.firebaseProjectId())) {
-            throw ApiException.badRequest("firebaseProjectId is required for Firebase auth");
+            throw DomainException.badRequest("firebaseProjectId is required for Firebase auth");
         }
         String secret = in.jwtSecret();
         if (ConnectorConfigService.MASK.equals(secret)) {
             secret = current.external().jwtSecret();
         } else if (!blank(secret)) {
             if (secret.length() < 32) {
-                throw ApiException.badRequest("jwtSecret must be at least 32 characters (HS256)");
+                throw DomainException.badRequest("jwtSecret must be at least 32 characters (HS256)");
             }
             secret = cipher.encrypt(secret);
         } else {
@@ -227,11 +227,11 @@ public class TenantService {
             urlPolicy.check(in.jwksUrl());
         }
         if (type.equals("jwt") && secret == null && blank(in.jwksUrl())) {
-            throw ApiException.badRequest("JWT auth needs either jwksUrl (RS256/ES256) or jwtSecret (HS256)");
+            throw DomainException.badRequest("JWT auth needs either jwksUrl (RS256/ES256) or jwtSecret (HS256)");
         }
         Integer ttl = input.tokenTtlMinutes();
         if (ttl != null && (ttl < 5 || ttl > 60 * 24 * 30)) {
-            throw ApiException.badRequest("tokenTtlMinutes must be between 5 and 43200");
+            throw DomainException.badRequest("tokenTtlMinutes must be between 5 and 43200");
         }
         TenantConfig.External stored = new TenantConfig.External(type, blankToNull(in.firebaseProjectId()),
                 blankToNull(in.jwtIssuer()), blankToNull(in.jwtAudience()), blankToNull(in.jwksUrl()), secret,
@@ -278,9 +278,9 @@ public class TenantService {
     }
 
     private Plan activePlan(String code) {
-        Plan plan = plans.findByCode(code).orElseThrow(() -> ApiException.badRequest("Unknown plan: " + code));
+        Plan plan = plans.findByCode(code).orElseThrow(() -> DomainException.badRequest("Unknown plan: " + code));
         if (!plan.isActive()) {
-            throw ApiException.badRequest("Plan '" + code + "' is not active");
+            throw DomainException.badRequest("Plan '" + code + "' is not active");
         }
         return plan;
     }
@@ -300,13 +300,13 @@ public class TenantService {
 
     private static void validateSettings(TenantConfig.Settings s) {
         if (s.maxMessageLength() != null && (s.maxMessageLength() < 1 || s.maxMessageLength() > 65_536)) {
-            throw ApiException.badRequest("maxMessageLength must be between 1 and 65536");
+            throw DomainException.badRequest("maxMessageLength must be between 1 and 65536");
         }
         if (s.editWindowMinutes() != null && s.editWindowMinutes() < 0) {
-            throw ApiException.badRequest("editWindowMinutes cannot be negative");
+            throw DomainException.badRequest("editWindowMinutes cannot be negative");
         }
         if (s.maxFileSizeMb() != null && (s.maxFileSizeMb() < 1 || s.maxFileSizeMb() > 2048)) {
-            throw ApiException.badRequest("maxFileSizeMb must be between 1 and 2048");
+            throw DomainException.badRequest("maxFileSizeMb must be between 1 and 2048");
         }
     }
 

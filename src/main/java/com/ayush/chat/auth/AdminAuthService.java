@@ -1,9 +1,9 @@
 package com.ayush.chat.auth;
 
 import com.ayush.chat.auth.AuthRepositories.AdminUserRepository;
-import com.ayush.chat.core.config.InfrastructureService;
+import com.ayush.chat.core.connector.runtime.PlatformConnectors;
 import com.ayush.chat.core.config.PlatformProperties;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import jakarta.annotation.PostConstruct;
@@ -34,7 +34,7 @@ public class AdminAuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwt;
     private final PlatformProperties properties;
-    private final InfrastructureService infrastructure;
+    private final PlatformConnectors infrastructure;
 
     public record LoginResult(JwtService.IssuedToken token, AdminUser admin) {
     }
@@ -66,7 +66,7 @@ public class AdminAuthService {
     @Transactional
     public LoginResult login(String email, String password, String ip) {
         if (email == null || password == null) {
-            throw ApiException.badRequest("email and password are required");
+            throw DomainException.badRequest("email and password are required");
         }
         String normalized = email.trim().toLowerCase(Locale.ROOT);
         // Two windows: per account+IP (normal typos) and per account across all IPs (distributed guessing).
@@ -75,13 +75,13 @@ public class AdminAuthService {
         long ipFailures = infrastructure.cache().get(ipKey).map(Long::parseLong).orElse(0L);
         long accountFailures = infrastructure.cache().get(accountKey).map(Long::parseLong).orElse(0L);
         if (ipFailures >= MAX_FAILED_ATTEMPTS || accountFailures >= MAX_FAILED_ATTEMPTS_PER_ACCOUNT) {
-            throw ApiException.rateLimited("Too many failed attempts. Try again in 15 minutes.");
+            throw DomainException.rateLimited("Too many failed attempts. Try again in 15 minutes.");
         }
         AdminUser admin = admins.findByEmailIgnoreCase(normalized).filter(AdminUser::isActive).orElse(null);
         if (admin == null || !passwordEncoder.matches(password, admin.getPasswordHash())) {
             infrastructure.cache().increment(ipKey, 1, Duration.ofMinutes(15));
             infrastructure.cache().increment(accountKey, 1, Duration.ofMinutes(15));
-            throw ApiException.unauthorized("Invalid email or password");
+            throw DomainException.unauthorized("Invalid email or password");
         }
         infrastructure.cache().delete(ipKey);
         admin.setLastLoginAt(Instant.now());
@@ -91,7 +91,7 @@ public class AdminAuthService {
 
     @Transactional(readOnly = true)
     public AdminUser get(Long id) {
-        return admins.findById(id).filter(AdminUser::isActive).orElseThrow(() -> ApiException.unauthorized("Admin no longer exists"));
+        return admins.findById(id).filter(AdminUser::isActive).orElseThrow(() -> DomainException.unauthorized("Admin no longer exists"));
     }
 
     @Transactional(readOnly = true)
@@ -102,11 +102,11 @@ public class AdminAuthService {
     @Transactional
     public AdminUser create(String email, String name, String password, AdminUser.Role role) {
         if (email == null || !email.contains("@")) {
-            throw ApiException.badRequest("A valid email is required");
+            throw DomainException.badRequest("A valid email is required");
         }
         validatePassword(password);
         if (admins.findByEmailIgnoreCase(email.trim()).isPresent()) {
-            throw ApiException.conflict("An admin with this email already exists");
+            throw DomainException.conflict("An admin with this email already exists");
         }
         AdminUser admin = new AdminUser();
         admin.setEmail(email.trim().toLowerCase(Locale.ROOT));
@@ -119,14 +119,14 @@ public class AdminAuthService {
     @Transactional
     public void delete(Long id, Long actorId, AdminUser.Role actorRole) {
         if (id.equals(actorId)) {
-            throw ApiException.badRequest("You cannot delete your own account");
+            throw DomainException.badRequest("You cannot delete your own account");
         }
-        AdminUser admin = admins.findById(id).orElseThrow(() -> ApiException.notFound("Admin"));
+        AdminUser admin = admins.findById(id).orElseThrow(() -> DomainException.notFound("Admin"));
         if (admin.getRole() == AdminUser.Role.OWNER && actorRole != AdminUser.Role.OWNER) {
-            throw ApiException.forbidden("Only owners can remove owners");
+            throw DomainException.forbidden("Only owners can remove owners");
         }
         if (admin.getRole() == AdminUser.Role.OWNER && admins.countByRoleAndActiveTrue(AdminUser.Role.OWNER) <= 1) {
-            throw ApiException.conflict("Cannot delete the last owner");
+            throw DomainException.conflict("Cannot delete the last owner");
         }
         admins.delete(admin);
         activeRoles.invalidate(id);
@@ -136,7 +136,7 @@ public class AdminAuthService {
     public void changePassword(Long id, String current, String next) {
         AdminUser admin = get(id);
         if (current == null || !passwordEncoder.matches(current, admin.getPasswordHash())) {
-            throw ApiException.badRequest("Current password is incorrect");
+            throw DomainException.badRequest("Current password is incorrect");
         }
         validatePassword(next);
         admin.setPasswordHash(passwordEncoder.encode(next));
@@ -145,7 +145,7 @@ public class AdminAuthService {
 
     private static void validatePassword(String password) {
         if (password == null || password.length() < 10) {
-            throw ApiException.badRequest("Password must be at least 10 characters");
+            throw DomainException.badRequest("Password must be at least 10 characters");
         }
     }
 }

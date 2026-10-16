@@ -1,7 +1,7 @@
 package com.ayush.chat.chat;
 
 import com.ayush.chat.core.cluster.ClusterService;
-import com.ayush.chat.core.config.InfrastructureService;
+import com.ayush.chat.core.connector.runtime.PlatformConnectors;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -27,7 +27,7 @@ public class MetricsService {
 
     private static final Duration RETENTION = Duration.ofHours(25);
 
-    private final InfrastructureService infrastructure;
+    private final PlatformConnectors infrastructure;
     private final Counter messages;
     private final Counter deliveries;
     private final Map<String, AtomicLong> pending = new ConcurrentHashMap<>();
@@ -35,7 +35,7 @@ public class MetricsService {
     public record MinutePoint(Instant minute, long messages, long deliveries) {
     }
 
-    public MetricsService(InfrastructureService infrastructure, MeterRegistry registry, ClusterService cluster) {
+    public MetricsService(PlatformConnectors infrastructure, MeterRegistry registry, ClusterService cluster) {
         this.infrastructure = infrastructure;
         this.messages = Counter.builder("chat.messages.sent").description("Messages accepted").register(registry);
         this.deliveries = Counter.builder("chat.deliveries").description("Realtime events delivered to local sessions").register(registry);

@@ -1,7 +1,6 @@
 package com.ayush.chat.core.crypto;
 
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
+import com.ayush.chat.core.config.PlatformProperties;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.Cipher;
@@ -17,30 +16,18 @@ import java.util.Base64;
  * AES-256-GCM encryption for secrets at rest (connector passwords, API credentials).
  * The key is derived from {@code platform.security.master-key}; rotate by re-saving configs.
  */
-@Slf4j
 @Component
 public class SecretCipher {
 
     private static final String PREFIX = "enc:v1:";
-    private static final String DEV_KEY = com.ayush.chat.core.config.PlatformProperties.Security.DEV_MASTER_KEY;
     private static final int IV_BYTES = 12;
     private static final int TAG_BITS = 128;
 
     private final SecretKeySpec key;
     private final SecureRandom random = new SecureRandom();
 
-    public SecretCipher(@Value("${platform.security.master-key:}") String masterKey) {
-        String material = masterKey == null || masterKey.isBlank() ? DEV_KEY : masterKey;
-        if (material.equals(DEV_KEY)) {
-            log.warn("platform.security.master-key is not set — using an insecure development key. "
-                    + "Set PLATFORM_MASTER_KEY before storing real credentials.");
-        }
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8));
-            this.key = new SecretKeySpec(digest, "AES");
-        } catch (Exception e) {
-            throw new IllegalStateException("Cannot initialise secret cipher", e);
-        }
+    public SecretCipher(KeyRing keyRing) {
+        this.key = new SecretKeySpec(keyRing.derive(KeyRing.Purpose.SECRETS), "AES");
     }
 
     public boolean isEncrypted(String value) {

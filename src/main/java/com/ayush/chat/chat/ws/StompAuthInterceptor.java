@@ -4,7 +4,7 @@ import com.ayush.chat.auth.JwtService;
 import com.ayush.chat.auth.Principals.ChatUserPrincipal;
 import com.ayush.chat.chat.ChatService;
 import com.ayush.chat.core.cluster.ClusterService;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.tenant.TenantDirectory;
 import com.ayush.chat.tenant.TenantSnapshot;
 import lombok.RequiredArgsConstructor;
@@ -62,7 +62,7 @@ public class StompAuthInterceptor implements ChannelInterceptor {
                 default -> {
                 }
             }
-        } catch (ApiException e) {
+        } catch (DomainException e) {
             throw new MessageDeliveryException(e.getMessage());
         }
         return message;
@@ -76,16 +76,16 @@ public class StompAuthInterceptor implements ChannelInterceptor {
         String token = header != null && header.startsWith("Bearer ") ? header.substring(7).trim()
                 : accessor.getFirstNativeHeader("token");
         if (token == null || token.isBlank()) {
-            throw ApiException.unauthorized("Missing Authorization header on CONNECT");
+            throw DomainException.unauthorized("Missing Authorization header on CONNECT");
         }
         if (!(jwt.verify(token) instanceof ChatUserPrincipal principal)) {
-            throw ApiException.unauthorized("A user token is required");
+            throw DomainException.unauthorized("A user token is required");
         }
         TenantSnapshot tenant = tenants.requireUsable(principal.tenant());
         chat.getObject().requireActiveUser(principal.tenant(), principal.userId());
         Long max = tenant.limits().maxConnections();
         if (max != null && cluster.connections(tenant.slug()) >= max) {
-            throw ApiException.quotaExceeded("Connection limit of " + max + " reached for this tenant");
+            throw DomainException.quotaExceeded("Connection limit of " + max + " reached for this tenant");
         }
         return principal;
     }

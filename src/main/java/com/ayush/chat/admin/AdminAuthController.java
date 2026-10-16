@@ -1,9 +1,10 @@
 package com.ayush.chat.admin;
 
+import com.ayush.chat.audit.AuditService;
 import com.ayush.chat.auth.AdminAuthService;
 import com.ayush.chat.auth.AdminUser;
 import com.ayush.chat.auth.Principals.AdminPrincipal;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -74,7 +75,7 @@ public class AdminAuthController {
     @ResponseStatus(HttpStatus.CREATED)
     public AdminView create(@AuthenticationPrincipal AdminPrincipal me, @RequestBody CreateAdmin request) {
         if (request.role() == AdminUser.Role.OWNER && me.role() != AdminUser.Role.OWNER) {
-            throw ApiException.forbidden("Only owners can create owners");
+            throw DomainException.forbidden("Only owners can create owners");
         }
         AdminUser created = admins.create(request.email(), request.name(), request.password(), request.role());
         audit.record("admin.created", "admin", created.getEmail(), null, "role=" + created.getRole());

@@ -5,6 +5,7 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import org.springframework.stereotype.Component;
 
@@ -18,7 +19,7 @@ public class RedisEventBusFactory implements ConnectorFactory<EventBus> {
         return new ConnectorDescriptor(ConnectorKind.EVENT_BUS, "redis", "Redis",
                 "Pub/Sub for fan-out and Streams consumer groups for work queues. Simple to run; "
                         + "fan-out is not replayed after a disconnect (use Kafka when that matters).",
-                "Key-value", "GA",
+                "Key-value", Maturity.GA,
                 List.of("Valkey", "KeyDB", "Dragonfly", "Amazon ElastiCache", "Azure Cache for Redis"),
                 List.of(ConfigField.of("uri", "Connection URI").secret().required().defaultValue("redis://localhost:6379")
                                 .placeholder("rediss://:password@host:6380/0")

@@ -1,15 +1,20 @@
 package com.ayush.chat.core.connector;
 
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Discovers every {@link ConnectorFactory} bean and builds connectors from {@link ConnectorConfig}s.
@@ -17,6 +22,13 @@ import java.util.Map;
 @Slf4j
 @Component
 public class ConnectorRegistry {
+
+    /** Closes swapped-out connectors after their grace period; owned here so it shuts down with the context. */
+    private final ScheduledExecutorService retirer = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "connector-retirer");
+        t.setDaemon(true);
+        return t;
+    });
 
     private final Map<ConnectorKind, Map<String, ConnectorFactory<?>>> factories = new EnumMap<>(ConnectorKind.class);
 
@@ -46,7 +58,7 @@ public class ConnectorRegistry {
     public ConnectorFactory<?> factory(ConnectorKind kind, String provider) {
         ConnectorFactory<?> factory = factories.get(kind).get(provider);
         if (factory == null) {
-            throw ApiException.badRequest("Unknown " + kind.getDisplayName() + " provider '" + provider
+            throw DomainException.badRequest("Unknown " + kind.getDisplayName() + " provider '" + provider
                     + "'. Available: " + factories.get(kind).keySet());
         }
         return factory;
@@ -69,16 +81,16 @@ public class ConnectorRegistry {
     public <T extends Connector> T create(ConnectorConfig config) {
         List<String> problems = validate(config);
         if (!problems.isEmpty()) {
-            throw ApiException.badRequest(String.join("; ", problems));
+            throw DomainException.badRequest(String.join("; ", problems));
         }
         ConnectorFactory<T> factory = (ConnectorFactory<T>) factory(config.kind(), config.provider());
         ConnectorSettings settings = ConnectorSettings.withDefaults(factory.descriptor(), config.settings());
         try {
             return factory.create(settings);
-        } catch (ApiException e) {
+        } catch (DomainException e) {
             throw e;
         } catch (Exception e) {
-            throw ApiException.badRequest("Could not connect to " + factory.descriptor().displayName()
+            throw DomainException.badRequest("Could not connect to " + factory.descriptor().displayName()
                     + ": " + rootMessage(e));
         }
     }
@@ -97,6 +109,16 @@ public class ConnectorRegistry {
                 connector.close();
             }
         }
+    }
+
+    /** Close a connector that was swapped out, once in-flight callers have had time to finish. */
+    public void retire(Connector connector, Duration grace) {
+        retirer.schedule(connector::close, grace.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    @PreDestroy
+    void shutdown() {
+        retirer.shutdownNow();
     }
 
     public static String rootMessage(Throwable e) {

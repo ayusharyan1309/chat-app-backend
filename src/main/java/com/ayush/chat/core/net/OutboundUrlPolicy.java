@@ -1,6 +1,6 @@
 package com.ayush.chat.core.net;
 
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -28,14 +28,14 @@ public class OutboundUrlPolicy {
         try {
             uri = URI.create(url.trim());
         } catch (Exception e) {
-            throw ApiException.badRequest("Invalid URL: " + url);
+            throw DomainException.badRequest("Invalid URL: " + url);
         }
         String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
         if (!scheme.equals("https") && !scheme.equals("http")) {
-            throw ApiException.badRequest("URL must use http or https");
+            throw DomainException.badRequest("URL must use http or https");
         }
         if (uri.getHost() == null || uri.getHost().isBlank()) {
-            throw ApiException.badRequest("URL must include a host");
+            throw DomainException.badRequest("URL must include a host");
         }
         if (allowPrivate) {
             return uri;
@@ -44,11 +44,11 @@ public class OutboundUrlPolicy {
         try {
             addresses = InetAddress.getAllByName(uri.getHost());
         } catch (UnknownHostException e) {
-            throw ApiException.badRequest("Host cannot be resolved: " + uri.getHost());
+            throw DomainException.badRequest("Host cannot be resolved: " + uri.getHost());
         }
         for (InetAddress address : addresses) {
             if (isInternal(address)) {
-                throw ApiException.badRequest("URL resolves to a private or internal address (" + address.getHostAddress()
+                throw DomainException.badRequest("URL resolves to a private or internal address (" + address.getHostAddress()
                         + "). Set platform.security.allow-private-network-callbacks=true to allow internal targets.");
             }
         }

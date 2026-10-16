@@ -4,6 +4,7 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.store.MessageStore;
 import com.google.auth.oauth2.GoogleCredentials;
@@ -34,7 +35,7 @@ public class FirestoreMessageStoreFactory implements ConnectorFactory<MessageSto
                 "Serverless document database. Tenants are isolated by document hierarchy; sequence numbers, "
                         + "idempotency and receipts are transactional; needs no composite indexes. Each conversation "
                         + "sustains about one message per second (Firestore per-document write limit).",
-                "Document", "BETA",
+                "Document", Maturity.BETA,
                 List.of("Firebase Cloud Firestore", "Firestore emulator"),
                 List.of(ConfigField.of("projectId", "Project id").required().placeholder("my-gcp-project").build(),
                         ConfigField.of("credentialsJson", "Service account key (JSON)").secret()

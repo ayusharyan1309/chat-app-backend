@@ -1,15 +1,21 @@
-package com.ayush.chat.core.config;
+package com.ayush.chat.core.connector.runtime;
 
 import com.ayush.chat.blob.BlobStore;
+import com.ayush.chat.bus.BusSubscriptions;
 import com.ayush.chat.bus.EventBus;
 import com.ayush.chat.cache.CacheStore;
+import com.ayush.chat.core.config.PlatformProperties;
 import com.ayush.chat.core.connector.Connector;
 import com.ayush.chat.core.connector.ConnectorConfig;
-import com.ayush.chat.core.connector.ConnectorHolder;
 import com.ayush.chat.core.connector.ConnectorKind;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.core.connector.HealthStatus;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.connector.config.ConfigScope;
+import com.ayush.chat.core.connector.config.ConfigSource;
+import com.ayush.chat.core.connector.config.ConnectorConfigChangedEvent;
+import com.ayush.chat.core.connector.config.ConnectorConfigService;
+import com.ayush.chat.core.connector.config.DefaultConnectors;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.push.PushSender;
 import com.ayush.chat.store.MessageStore;
 import jakarta.annotation.PostConstruct;
@@ -20,18 +26,16 @@ import org.springframework.stereotype.Service;
 
 import java.util.EnumMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Owns the platform-level connector for every slot and hot-swaps it when its configuration
+ * Owns the platform-level connector of every slot and hot-swaps it when its configuration
  * changes. Cache, bus, media and push fall back to safe local providers if the configured one is
- * unreachable at startup; the message store never falls back silently (writing to the wrong
- * database would be worse than failing).
+ * unreachable at startup ({@link DefaultConnectors#safeFallback}).
  */
 @Slf4j
 @Service
-public class InfrastructureService implements DisposableBean {
+public class PlatformConnectors implements DisposableBean {
 
     private final ConnectorRegistry registry;
     private final ConnectorConfigService configService;
@@ -39,11 +43,12 @@ public class InfrastructureService implements DisposableBean {
     private final Map<ConnectorKind, String> lastErrors = new ConcurrentHashMap<>();
     private final BusSubscriptions busSubscriptions;
 
-    public InfrastructureService(ConnectorRegistry registry, ConnectorConfigService configService) {
+    public PlatformConnectors(ConnectorRegistry registry, ConnectorConfigService configService, PlatformProperties properties) {
         this.registry = registry;
         this.configService = configService;
         for (ConnectorKind kind : ConnectorKind.values()) {
-            holders.put(kind, new ConnectorHolder<>(kind.getDisplayName(), registry, 30_000));
+            holders.put(kind, new ConnectorHolder<>(kind.getDisplayName(), registry,
+                    properties.getConnectorRuntime().getRetireGrace()));
         }
         this.busSubscriptions = new BusSubscriptions(this::bus);
         holder(ConnectorKind.EVENT_BUS, EventBus.class).onSwap((previous, next) -> {
@@ -53,7 +58,7 @@ public class InfrastructureService implements DisposableBean {
         });
     }
 
-    public record ComponentStatus(ConnectorKind kind, ConnectorConfig config, String source, HealthStatus health,
+    public record ComponentStatus(ConnectorKind kind, ConnectorConfig config, ConfigSource source, HealthStatus health,
                                   String lastError) {
     }
 
@@ -70,32 +75,21 @@ public class InfrastructureService implements DisposableBean {
             holders.get(kind).apply(config);
             lastErrors.remove(kind);
         } catch (Exception e) {
-            String message = e.getMessage();
-            lastErrors.put(kind, message);
-            log.error("{} '{}' failed to start: {}", kind.getDisplayName(), config.provider(), message);
+            lastErrors.put(kind, e.getMessage());
+            log.error("{} '{}' failed to start: {}", kind.getDisplayName(), config.provider(), e.getMessage());
             if (!holders.get(kind).isActive()) {
-                fallback(kind).ifPresent(fb -> {
+                DefaultConnectors.safeFallback(kind).ifPresent(fallback -> {
                     log.warn("{} falling back to '{}' until the configured provider is reachable",
-                            kind.getDisplayName(), fb.provider());
-                    holders.get(kind).apply(fb);
+                            kind.getDisplayName(), fallback.provider());
+                    holders.get(kind).apply(fallback);
                 });
             }
         }
     }
 
-    private Optional<ConnectorConfig> fallback(ConnectorKind kind) {
-        return switch (kind) {
-            case MESSAGE_STORE -> Optional.empty();
-            case CACHE -> Optional.of(new ConnectorConfig(kind, "memory", Map.of()));
-            case EVENT_BUS -> Optional.of(new ConnectorConfig(kind, "memory", Map.of()));
-            case BLOB_STORE -> Optional.of(new ConnectorConfig(kind, "local", Map.of("directory", "./data/media")));
-            case PUSH -> Optional.of(new ConnectorConfig(kind, "none", Map.of()));
-        };
-    }
-
     @EventListener
     public void onConfigChanged(ConnectorConfigChangedEvent event) {
-        if (event.isPlatform()) {
+        if (event.scope().isPlatform()) {
             activate(event.kind());
         }
     }
@@ -110,7 +104,7 @@ public class InfrastructureService implements DisposableBean {
     private <T extends Connector> T active(ConnectorKind kind, Class<T> type) {
         ConnectorHolder<T> holder = holder(kind, type);
         if (!holder.isActive()) {
-            throw ApiException.unavailable(kind.getDisplayName() + " is unavailable: "
+            throw DomainException.unavailable(kind.getDisplayName() + " is unavailable: "
                     + lastErrors.getOrDefault(kind, "not configured"));
         }
         return holder.get();
@@ -136,6 +130,7 @@ public class InfrastructureService implements DisposableBean {
         return active(ConnectorKind.PUSH, PushSender.class);
     }
 
+    /** Bus subscriptions that survive event-bus hot swaps. */
     public BusSubscriptions busSubscriptions() {
         return busSubscriptions;
     }
@@ -147,12 +142,12 @@ public class InfrastructureService implements DisposableBean {
      * never take the platform down.
      */
     public ComponentStatus apply(ConnectorKind kind, String provider, Map<String, Object> settings, String actor) {
-        ConnectorConfig config = configService.unmask(ConnectorConfigChangedEvent.PLATFORM, kind, provider, settings);
+        ConnectorConfig config = configService.unmask(ConfigScope.PLATFORM, kind, provider, settings);
         ConnectorHolder<? extends Connector> holder = holders.get(kind);
         ConnectorConfig previous = holder.config();
         holder.apply(config);
         try {
-            configService.save(ConnectorConfigChangedEvent.PLATFORM, config, actor);
+            configService.save(ConfigScope.PLATFORM, config, actor);
         } catch (RuntimeException e) {
             if (previous != null) {
                 holder.apply(previous);
@@ -164,18 +159,18 @@ public class InfrastructureService implements DisposableBean {
     }
 
     public HealthStatus test(ConnectorKind kind, String provider, Map<String, Object> settings) {
-        return registry.test(configService.unmask(ConnectorConfigChangedEvent.PLATFORM, kind, provider, settings));
+        return registry.test(configService.unmask(ConfigScope.PLATFORM, kind, provider, settings));
     }
 
     public ComponentStatus reset(ConnectorKind kind) {
-        configService.delete(ConnectorConfigChangedEvent.PLATFORM, kind);
+        configService.delete(ConfigScope.PLATFORM, kind);
         activate(kind);
         return status(kind);
     }
 
     public ComponentStatus status(ConnectorKind kind) {
         ConnectorHolder<? extends Connector> holder = holders.get(kind);
-        String source = configService.stored(ConnectorConfigChangedEvent.PLATFORM, kind).isPresent() ? "database" : "bootstrap";
+        ConfigSource source = configService.platformSource(kind);
         if (!holder.isActive()) {
             return new ComponentStatus(kind, configService.effectivePlatform(kind), source,
                     HealthStatus.down(lastErrors.getOrDefault(kind, "not configured")), lastErrors.get(kind));

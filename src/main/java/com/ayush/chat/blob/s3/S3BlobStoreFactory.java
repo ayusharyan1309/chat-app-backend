@@ -5,6 +5,7 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import org.springframework.stereotype.Component;
 
@@ -18,7 +19,7 @@ public class S3BlobStoreFactory implements ConnectorFactory<BlobStore> {
     public ConnectorDescriptor descriptor() {
         return new ConnectorDescriptor(ConnectorKind.BLOB_STORE, "s3", "Amazon S3",
                 "S3 or any S3-compatible object storage. Clients download media directly via presigned URLs.",
-                "Object storage", "GA",
+                "Object storage", Maturity.GA,
                 List.of("MinIO", "Cloudflare R2", "DigitalOcean Spaces", "Backblaze B2",
                         "Google Cloud Storage (S3 interop)", "Wasabi"),
                 List.of(ConfigField.of("bucket", "Bucket").required().placeholder("chat-media").build(),

@@ -1,6 +1,10 @@
-package com.ayush.chat.core.config;
+package com.ayush.chat.core.connector.runtime;
 
+import com.ayush.chat.core.connector.config.ConnectorConfigChangedEvent;
+import com.ayush.chat.core.connector.config.ConnectorConfigService;
+import com.ayush.chat.core.config.PlatformProperties;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.connector.ConnectorRegistry;
 import com.ayush.chat.push.PushSender;
 import com.ayush.chat.store.MessageStore;
@@ -19,10 +23,12 @@ public class TenantConnectors implements DisposableBean {
     private final TenantConnectorRouter<PushSender> push;
 
     public TenantConnectors(ConnectorRegistry registry, ConnectorConfigService configService,
-                            InfrastructureService infrastructure) {
+                            PlatformConnectors platform, PlatformProperties properties) {
+        PlatformProperties.Connectors runtime = properties.getConnectorRuntime();
         this.stores = new TenantConnectorRouter<>(ConnectorKind.MESSAGE_STORE, registry, configService,
-                infrastructure::messageStore);
-        this.push = new TenantConnectorRouter<>(ConnectorKind.PUSH, registry, configService, infrastructure::push);
+                platform::messageStore, runtime.getRetireGrace(), runtime.getTenantFailureBackoff());
+        this.push = new TenantConnectorRouter<>(ConnectorKind.PUSH, registry, configService, platform::push,
+                runtime.getRetireGrace(), runtime.getTenantFailureBackoff());
     }
 
     public MessageStore store(String tenantSlug) {
@@ -37,15 +43,14 @@ public class TenantConnectors implements DisposableBean {
         return switch (kind) {
             case MESSAGE_STORE -> stores;
             case PUSH -> push;
-            default -> throw new IllegalArgumentException(kind.getDisplayName() + " cannot be overridden per tenant");
+            default -> throw DomainException.badRequest(kind.getDisplayName() + " is platform-wide and cannot be overridden per tenant");
         };
     }
 
     @EventListener
     public void onConfigChanged(ConnectorConfigChangedEvent event) {
-        String slug = event.tenantSlug();
-        if (slug != null && event.kind().isTenantOverridable()) {
-            router(event.kind()).onConfigChanged(slug);
+        if (!event.scope().isPlatform() && event.kind().isTenantOverridable()) {
+            router(event.kind()).onConfigChanged(event.scope().tenantSlug());
         }
     }
 

@@ -5,6 +5,7 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.common.config.SaslConfigs;
@@ -25,7 +26,7 @@ public class KafkaEventBusFactory implements ConnectorFactory<EventBus> {
     public ConnectorDescriptor descriptor() {
         return new ConnectorDescriptor(ConnectorKind.EVENT_BUS, "kafka", "Apache Kafka",
                 "Durable, partitioned log. Per-key ordering, consumer groups for work queues, scales to many nodes.",
-                "Streaming", "GA",
+                "Streaming", Maturity.GA,
                 List.of("Redpanda", "Amazon MSK", "Confluent Cloud", "Azure Event Hubs (Kafka API)", "Aiven"),
                 List.of(ConfigField.of("bootstrapServers", "Bootstrap servers").required()
                                 .placeholder("broker1:9092,broker2:9092")

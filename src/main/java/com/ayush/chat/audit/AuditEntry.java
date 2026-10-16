@@ -1,4 +1,4 @@
-package com.ayush.chat.admin;
+package com.ayush.chat.audit;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;

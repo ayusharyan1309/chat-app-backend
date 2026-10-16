@@ -1,6 +1,6 @@
 package com.ayush.chat.tenant;
 
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.tenant.TenantRepositories.PlanRepository;
 import com.ayush.chat.tenant.TenantRepositories.TenantRepository;
 import lombok.RequiredArgsConstructor;
@@ -35,7 +35,7 @@ public class PlanService {
 
     @Transactional(readOnly = true)
     public Plan get(String code) {
-        return plans.findByCode(code).orElseThrow(() -> ApiException.notFound("Plan '" + code + "'"));
+        return plans.findByCode(code).orElseThrow(() -> DomainException.notFound("Plan '" + code + "'"));
     }
 
     public long tenantCount(String code) {
@@ -45,10 +45,10 @@ public class PlanService {
     @Transactional
     public Plan create(PlanInput input) {
         if (input.code() == null || !CODE.matcher(input.code()).matches()) {
-            throw ApiException.badRequest("code must be 2-50 chars: lowercase letters, digits and dashes");
+            throw DomainException.badRequest("code must be 2-50 chars: lowercase letters, digits and dashes");
         }
         if (plans.findByCode(input.code()).isPresent()) {
-            throw ApiException.conflict("Plan '" + input.code() + "' already exists");
+            throw DomainException.conflict("Plan '" + input.code() + "' already exists");
         }
         Plan plan = new Plan();
         plan.setCode(input.code());
@@ -69,18 +69,18 @@ public class PlanService {
     public void delete(String code) {
         Plan plan = get(code);
         if (plan.isDefaultPlan()) {
-            throw ApiException.conflict("The default plan cannot be deleted");
+            throw DomainException.conflict("The default plan cannot be deleted");
         }
         long inUse = tenants.countByPlanCode(code);
         if (inUse > 0) {
-            throw ApiException.conflict("Plan is used by " + inUse + " tenant(s)");
+            throw DomainException.conflict("Plan is used by " + inUse + " tenant(s)");
         }
         plans.delete(plan);
     }
 
     private void apply(Plan plan, PlanInput input) {
         if (input.name() == null || input.name().isBlank()) {
-            throw ApiException.badRequest("name is required");
+            throw DomainException.badRequest("name is required");
         }
         plan.setName(input.name().trim());
         plan.setDescription(input.description());
@@ -96,7 +96,7 @@ public class PlanService {
         plan.setMessagesPerSecond(l.messagesPerSecond());
         Set<String> features = new LinkedHashSet<>();
         for (String id : input.features() == null ? Set.<String>of() : input.features()) {
-            Feature f = Feature.fromId(id).orElseThrow(() -> ApiException.badRequest("Unknown feature: " + id));
+            Feature f = Feature.fromId(id).orElseThrow(() -> DomainException.badRequest("Unknown feature: " + id));
             if (f.isToggleable()) {
                 features.add(f.getId());
             }

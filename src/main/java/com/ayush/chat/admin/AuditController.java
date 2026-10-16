@@ -1,5 +1,7 @@
 package com.ayush.chat.admin;
 
+import com.ayush.chat.audit.AuditEntry;
+import com.ayush.chat.audit.AuditService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;

@@ -3,6 +3,7 @@ package com.ayush.chat.push.none;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.core.connector.HealthStatus;
 import com.ayush.chat.push.PushSender;
@@ -18,7 +19,7 @@ public class NoopPushFactory implements ConnectorFactory<PushSender> {
     @Override
     public ConnectorDescriptor descriptor() {
         return new ConnectorDescriptor(ConnectorKind.PUSH, "none", "Disabled",
-                "Push notifications are not sent (logged at debug level).", "None", "GA", List.of(), List.of());
+                "Push notifications are not sent (logged at debug level).", "None", Maturity.GA, List.of(), List.of());
     }
 
     @Override

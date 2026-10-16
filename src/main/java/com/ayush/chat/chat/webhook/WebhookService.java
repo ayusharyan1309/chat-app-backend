@@ -2,9 +2,9 @@ package com.ayush.chat.chat.webhook;
 
 import com.ayush.chat.chat.RealtimeGateway;
 import com.ayush.chat.chat.event.DomainEvent;
-import com.ayush.chat.core.config.ConnectorConfigService;
+import com.ayush.chat.core.connector.config.ConnectorConfigService;
 import com.ayush.chat.core.crypto.SecretCipher;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.net.OutboundUrlPolicy;
 import com.ayush.chat.core.util.Ids;
 import com.ayush.chat.core.util.Json;
@@ -178,16 +178,16 @@ public class WebhookService {
 
     private void apply(Webhook webhook, WebhookInput input) {
         if (input.url() == null || input.url().isBlank()) {
-            throw ApiException.badRequest("url is required");
+            throw DomainException.badRequest("url is required");
         }
         urlPolicy.check(input.url());
         Set<String> events = new LinkedHashSet<>(input.events() == null ? List.of() : input.events());
         if (events.isEmpty()) {
-            throw ApiException.badRequest("Select at least one event");
+            throw DomainException.badRequest("Select at least one event");
         }
         for (String event : events) {
             if (!DomainEvent.WEBHOOK_TYPES.contains(event)) {
-                throw ApiException.badRequest("Unknown event '" + event + "'. Valid: " + DomainEvent.WEBHOOK_TYPES);
+                throw DomainException.badRequest("Unknown event '" + event + "'. Valid: " + DomainEvent.WEBHOOK_TYPES);
             }
         }
         webhook.setUrl(input.url().trim());
@@ -200,7 +200,7 @@ public class WebhookService {
 
     private Webhook owned(Tenant tenant, Long id) {
         return webhooks.findById(id).filter(w -> w.getTenant().getId().equals(tenant.getId()))
-                .orElseThrow(() -> ApiException.notFound("Webhook"));
+                .orElseThrow(() -> DomainException.notFound("Webhook"));
     }
 
     private static WebhookView view(Webhook w, String plaintextSecret) {

@@ -5,7 +5,7 @@ import com.ayush.chat.chat.ChatService;
 import com.ayush.chat.chat.PresenceService;
 import com.ayush.chat.chat.RealtimeGateway;
 import com.ayush.chat.chat.event.ChatEvent;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.store.model.ChatMessage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -98,9 +98,9 @@ public class ChatSocketController {
     }
 
     private void error(ChatUserPrincipal me, String conversationId, Exception e, String clientMsgId) {
-        String code = e instanceof ApiException api ? api.getCode() : "internal_error";
-        String message = e instanceof ApiException ? e.getMessage() : "Unexpected server error";
-        if (!(e instanceof ApiException)) {
+        String code = e instanceof DomainException api ? api.getCode() : "internal_error";
+        String message = e instanceof DomainException ? e.getMessage() : "Unexpected server error";
+        if (!(e instanceof DomainException)) {
             log.error("Socket operation failed for {}", me.getName(), e);
         }
         Map<String, Object> data = new LinkedHashMap<>();

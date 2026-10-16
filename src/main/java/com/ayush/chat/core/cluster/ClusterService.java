@@ -1,9 +1,11 @@
 package com.ayush.chat.core.cluster;
 
+import com.ayush.chat.cache.CacheKeys;
 import com.ayush.chat.cache.CacheStore;
-import com.ayush.chat.core.config.InfrastructureService;
+import com.ayush.chat.core.config.BuildVersion;
 import com.ayush.chat.core.config.PlatformProperties;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.runtime.PlatformConnectors;
 import com.ayush.chat.core.util.Ids;
 import com.ayush.chat.core.util.Json;
 import jakarta.annotation.PostConstruct;
@@ -12,7 +14,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -23,18 +24,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Lightweight cluster membership over the shared cache: each node claims a slot number and
- * heartbeats its live connection counts under {@code cluster:node:<slot>} with a TTL. Any node can
+ * heartbeats its live connection counts under {@link CacheKeys#clusterNode} with a TTL. Any node can
  * then aggregate cluster-wide connection counts per tenant without a coordinator.
  */
 @Slf4j
 @Service
 public class ClusterService {
 
-    private static final Duration NODE_TTL = Duration.ofSeconds(30);
-    private static final int SLOT_WINDOW = 256;
-
-    private final InfrastructureService infrastructure;
-    private final PlatformProperties properties;
+    private final PlatformConnectors connectors;
+    private final PlatformProperties.Cluster settings;
+    private final String version;
     @Getter
     private final String nodeId;
     @Getter
@@ -43,16 +42,22 @@ public class ClusterService {
     private volatile long slot;
     private volatile List<NodeInfo> lastNodes = List.of();
 
+    /** What each node publishes about itself. */
+    record NodeHeartbeat(String nodeId, String version, Instant startedAt, Instant heartbeatAt,
+                         Map<String, Integer> connections) {
+    }
+
     public record NodeInfo(String nodeId, String version, Instant startedAt, Instant heartbeatAt,
                            Map<String, Integer> connections, int totalConnections, boolean self) {
     }
 
-    public ClusterService(InfrastructureService infrastructure, PlatformProperties properties) {
-        this.infrastructure = infrastructure;
-        this.properties = properties;
+    public ClusterService(PlatformConnectors connectors, PlatformProperties properties, BuildVersion buildVersion) {
+        this.connectors = connectors;
+        this.settings = properties.getCluster();
+        this.version = buildVersion.get();
         this.nodeId = properties.getNodeId() == null || properties.getNodeId().isBlank()
                 ? "node-" + Ids.randomToken(6).toLowerCase() : properties.getNodeId();
-        infrastructure.holder(ConnectorKind.CACHE, CacheStore.class).onSwap((previous, next) -> {
+        connectors.holder(ConnectorKind.CACHE, CacheStore.class).onSwap((previous, next) -> {
             if (previous != null) {
                 claimSlot();
             }
@@ -68,7 +73,7 @@ public class ClusterService {
 
     private void claimSlot() {
         try {
-            slot = infrastructure.cache().increment("cluster:slots", 1, null);
+            slot = connectors.cache().increment(CacheKeys.clusterSlots(), 1, null);
         } catch (Exception e) {
             log.warn("Could not claim cluster slot: {}", e.getMessage());
         }
@@ -107,39 +112,34 @@ public class ClusterService {
         return lastNodes;
     }
 
-    @Scheduled(fixedDelay = 10_000, initialDelay = 10_000)
+    @Scheduled(fixedDelayString = "#{@platformProperties.cluster.heartbeat.toMillis()}",
+            initialDelayString = "#{@platformProperties.cluster.heartbeat.toMillis()}")
     public void heartbeat() {
         try {
-            CacheStore cache = infrastructure.cache();
+            CacheStore cache = connectors.cache();
             Map<String, Integer> counts = new HashMap<>();
             localConnections.forEach((tenant, n) -> counts.put(tenant, n.get()));
-            Map<String, Object> beat = Map.of("nodeId", nodeId, "version", properties.getVersion(),
-                    "startedAt", startedAt.toString(), "heartbeatAt", Instant.now().toString(), "connections", counts);
-            long maxSlot = cache.get("cluster:slots").map(Long::parseLong).orElse(slot);
-            if (slot == 0 || maxSlot - slot > SLOT_WINDOW / 2) {
+            long maxSlot = cache.get(CacheKeys.clusterSlots()).map(Long::parseLong).orElse(slot);
+            if (slot == 0 || maxSlot - slot > settings.getSlotWindow() / 2) {
                 claimSlot();
                 maxSlot = Math.max(maxSlot, slot);
             }
-            cache.set("cluster:node:" + slot, Json.write(beat), NODE_TTL);
+            cache.set(CacheKeys.clusterNode(slot),
+                    Json.write(new NodeHeartbeat(nodeId, version, startedAt, Instant.now(), counts)), settings.getNodeTtl());
 
             List<String> keys = new ArrayList<>();
-            for (long s = Math.max(1, maxSlot - SLOT_WINDOW + 1); s <= maxSlot; s++) {
-                keys.add("cluster:node:" + s);
+            for (long s = Math.max(1, maxSlot - settings.getSlotWindow() + 1); s <= maxSlot; s++) {
+                keys.add(CacheKeys.clusterNode(s));
             }
             List<NodeInfo> nodes = new ArrayList<>();
             for (String raw : cache.getMany(keys)) {
                 if (raw == null) {
                     continue;
                 }
-                Map<String, Object> m = Json.readMap(raw);
-                @SuppressWarnings("unchecked")
-                Map<String, Object> conns = (Map<String, Object>) m.getOrDefault("connections", Map.of());
-                Map<String, Integer> typed = new HashMap<>();
-                conns.forEach((k, v) -> typed.put(k, ((Number) v).intValue()));
-                String id = String.valueOf(m.get("nodeId"));
-                nodes.add(new NodeInfo(id, String.valueOf(m.get("version")), Instant.parse(String.valueOf(m.get("startedAt"))),
-                        Instant.parse(String.valueOf(m.get("heartbeatAt"))), typed,
-                        typed.values().stream().mapToInt(Integer::intValue).sum(), id.equals(nodeId)));
+                NodeHeartbeat beat = Json.read(raw, NodeHeartbeat.class);
+                Map<String, Integer> connections = beat.connections() == null ? Map.of() : beat.connections();
+                nodes.add(new NodeInfo(beat.nodeId(), beat.version(), beat.startedAt(), beat.heartbeatAt(), connections,
+                        connections.values().stream().mapToInt(Integer::intValue).sum(), beat.nodeId().equals(nodeId)));
             }
             lastNodes = List.copyOf(nodes);
         } catch (Exception e) {

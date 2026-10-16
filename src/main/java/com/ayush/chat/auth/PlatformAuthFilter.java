@@ -1,7 +1,7 @@
 package com.ayush.chat.auth;
 
 import com.ayush.chat.chat.ChatService;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.tenant.TenantDirectory;
 import com.ayush.chat.tenant.TenantSnapshot;
 import com.ayush.chat.tenant.UsageService;
@@ -46,7 +46,7 @@ public class PlatformAuthFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         try {
             authenticate(request).ifPresent(auth -> SecurityContextHolder.getContext().setAuthentication(auth));
-        } catch (ApiException e) {
+        } catch (DomainException e) {
             request.setAttribute(AUTH_ERROR_ATTRIBUTE, e);
         }
         chain.doFilter(request, response);
@@ -56,7 +56,7 @@ public class PlatformAuthFilter extends OncePerRequestFilter {
         String apiKey = request.getHeader("X-API-Key");
         if (apiKey != null && !apiKey.isBlank()) {
             Principals.TenantServerPrincipal principal = apiKeys.authenticate(apiKey.trim())
-                    .orElseThrow(() -> ApiException.unauthorized("Invalid or revoked API key"));
+                    .orElseThrow(() -> DomainException.unauthorized("Invalid or revoked API key"));
             usage.recordApiCall(principal.tenant());
             return Optional.of(token(principal, "ROLE_TENANT_SERVER"));
         }
@@ -68,15 +68,15 @@ public class PlatformAuthFilter extends OncePerRequestFilter {
         if (principal instanceof Principals.AdminPrincipal admin) {
             // Role comes from the database, not the token: deleted or demoted admins lose access quickly.
             AdminUser.Role role = admins.getObject().currentRole(admin.id())
-                    .orElseThrow(() -> ApiException.unauthorized("Admin account no longer exists"));
+                    .orElseThrow(() -> DomainException.unauthorized("Admin account no longer exists"));
             Principals.AdminPrincipal current = new Principals.AdminPrincipal(admin.id(), admin.email(), role);
             return Optional.of(token(current, "ROLE_" + role.name()));
         }
         Principals.ChatUserPrincipal user = (Principals.ChatUserPrincipal) principal;
         TenantSnapshot tenant = tenants.find(user.tenant())
-                .orElseThrow(() -> ApiException.unauthorized("Tenant no longer exists"));
+                .orElseThrow(() -> DomainException.unauthorized("Tenant no longer exists"));
         if (!tenant.isUsable()) {
-            throw ApiException.forbidden("Tenant '" + tenant.slug() + "' is " + tenant.status().name().toLowerCase());
+            throw DomainException.forbidden("Tenant '" + tenant.slug() + "' is " + tenant.status().name().toLowerCase());
         }
         chat.getObject().requireActiveUser(user.tenant(), user.userId());
         return Optional.of(token(user, "ROLE_CHAT_USER"));

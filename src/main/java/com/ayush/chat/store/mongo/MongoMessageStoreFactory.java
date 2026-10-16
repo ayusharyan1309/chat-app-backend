@@ -4,6 +4,7 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.store.MessageStore;
 import org.springframework.stereotype.Component;
@@ -19,7 +20,7 @@ public class MongoMessageStoreFactory implements ConnectorFactory<MessageStore> 
                 "Document store using single-document atomic operations only: per-conversation sequence "
                         + "numbers via $inc, idempotent sends via unique claim documents. Works on standalone "
                         + "servers, replica sets and sharded clusters; no multi-document transactions required.",
-                "Document", "GA",
+                "Document", Maturity.GA,
                 List.of("MongoDB Atlas", "Amazon DocumentDB", "Azure Cosmos DB (Mongo API)", "FerretDB"),
                 List.of(ConfigField.of("uri", "Connection string").secret().required()
                                 .placeholder("mongodb://user:pass@host:27017")

@@ -1,6 +1,5 @@
-package com.ayush.chat.core.config;
+package com.ayush.chat.bus;
 
-import com.ayush.chat.bus.EventBus;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;

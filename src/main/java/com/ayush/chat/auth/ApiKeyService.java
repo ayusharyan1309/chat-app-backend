@@ -2,7 +2,7 @@ package com.ayush.chat.auth;
 
 import com.ayush.chat.auth.AuthRepositories.ApiKeyRepository;
 import com.ayush.chat.core.crypto.SecretCipher;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.util.Ids;
 import com.ayush.chat.tenant.Tenant;
 import com.github.benmanes.caffeine.cache.Cache;
@@ -40,7 +40,7 @@ public class ApiKeyService {
     @Transactional
     public CreatedKey create(Tenant tenant, String name, String actor) {
         if (name == null || name.isBlank()) {
-            throw ApiException.badRequest("name is required");
+            throw DomainException.badRequest("name is required");
         }
         String plaintext = PREFIX + Ids.randomToken(40);
         ApiKey key = new ApiKey();
@@ -61,7 +61,7 @@ public class ApiKeyService {
     @Transactional
     public void revoke(Tenant tenant, Long keyId) {
         ApiKey key = keys.findById(keyId).filter(k -> k.getTenant().getId().equals(tenant.getId()))
-                .orElseThrow(() -> ApiException.notFound("API key"));
+                .orElseThrow(() -> DomainException.notFound("API key"));
         if (key.getRevokedAt() == null) {
             key.setRevokedAt(Instant.now());
             keys.save(key);

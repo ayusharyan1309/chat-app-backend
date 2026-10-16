@@ -4,7 +4,7 @@ import com.ayush.chat.auth.ExternalTokenVerifier;
 import com.ayush.chat.auth.JwtService;
 import com.ayush.chat.chat.ChatService;
 import com.ayush.chat.chat.Views.UserView;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.store.model.ChatUser;
 import com.ayush.chat.tenant.Feature;
 import com.ayush.chat.tenant.TenantConfig;
@@ -64,10 +64,10 @@ public class ClientAuthController {
     public TokenResponse devLogin(@RequestBody DevLoginRequest request) {
         TenantSnapshot t = tenants.requireUsable(request.tenant());
         if (!Boolean.TRUE.equals(t.auth().devLoginEnabled())) {
-            throw ApiException.forbidden("Dev login is disabled for this tenant");
+            throw DomainException.forbidden("Dev login is disabled for this tenant");
         }
         if (request.userId() == null || request.userId().isBlank()) {
-            throw ApiException.badRequest("userId is required");
+            throw DomainException.badRequest("userId is required");
         }
         ChatUser user = chat.ensureUser(t.slug(), request.userId().trim(), request.displayName(), null);
         return issue(t, user);
@@ -78,7 +78,7 @@ public class ClientAuthController {
         TenantSnapshot t = tenants.requireUsable(request.tenant());
         t.require(Feature.EXTERNAL_AUTH);
         if (request.token() == null || request.token().isBlank()) {
-            throw ApiException.badRequest("token is required");
+            throw DomainException.badRequest("token is required");
         }
         ExternalTokenVerifier.Identity identity = verifier.verify(t.auth().external(), request.token());
         ChatUser user = chat.ensureUser(t.slug(), identity.userId(), identity.displayName(), identity.email());

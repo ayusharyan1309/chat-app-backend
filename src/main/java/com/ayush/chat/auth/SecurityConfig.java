@@ -1,8 +1,9 @@
 package com.ayush.chat.auth;
 
 import com.ayush.chat.core.config.PlatformProperties;
-import com.ayush.chat.core.error.ApiException;
-import com.ayush.chat.core.error.GlobalExceptionHandler;
+import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.error.ErrorCode;
+import com.ayush.chat.core.error.ErrorHttpMapping;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -10,7 +11,6 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -71,10 +71,10 @@ public class SecurityConfig {
                 .headers(h -> h.frameOptions(f -> f.sameOrigin()))
                 .addFilterBefore(authFilter, UsernamePasswordAuthenticationFilter.class)
                 .exceptionHandling(e -> e
-                        .authenticationEntryPoint((req, res, ex) -> writeError(mapper, req, res, HttpStatus.UNAUTHORIZED,
-                                "unauthorized", "Authentication required"))
-                        .accessDeniedHandler((req, res, ex) -> writeError(mapper, req, res, HttpStatus.FORBIDDEN,
-                                "forbidden", "You do not have access to this resource")))
+                        .authenticationEntryPoint((req, res, ex) -> writeError(mapper, req, res, ErrorCode.UNAUTHORIZED,
+                                "Authentication required"))
+                        .accessDeniedHandler((req, res, ex) -> writeError(mapper, req, res, ErrorCode.FORBIDDEN,
+                                "You do not have access to this resource")))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/admin/auth/login").permitAll()
                         .requestMatchers("/api/admin/auth/me", "/api/admin/auth/change-password").hasAnyRole(ADMIN_ROLES)
@@ -106,16 +106,16 @@ public class SecurityConfig {
         return source;
     }
 
-    private static void writeError(ObjectMapper mapper, HttpServletRequest req, HttpServletResponse res, HttpStatus status,
-                                   String code, String message) throws IOException {
-        Object attribute = req.getAttribute(PlatformAuthFilter.AUTH_ERROR_ATTRIBUTE);
-        if (attribute instanceof ApiException authError) {
-            status = authError.getStatus();
-            code = authError.getCode();
+    private static void writeError(ObjectMapper mapper, HttpServletRequest req, HttpServletResponse res, ErrorCode fallback,
+                                   String fallbackMessage) throws IOException {
+        ErrorCode code = fallback;
+        String message = fallbackMessage;
+        if (req.getAttribute(PlatformAuthFilter.AUTH_ERROR_ATTRIBUTE) instanceof DomainException authError) {
+            code = authError.getErrorCode();
             message = authError.getMessage();
         }
-        res.setStatus(status.value());
+        res.setStatus(ErrorHttpMapping.status(code).value());
         res.setContentType(MediaType.APPLICATION_JSON_VALUE);
-        mapper.writeValue(res.getOutputStream(), GlobalExceptionHandler.errorBody(status, code, message, req.getRequestURI()));
+        mapper.writeValue(res.getOutputStream(), ErrorHttpMapping.body(code, message, req.getRequestURI()));
     }
 }

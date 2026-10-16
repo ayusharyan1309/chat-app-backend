@@ -1,14 +1,15 @@
 package com.ayush.chat.chat;
 
 import com.ayush.chat.blob.BlobStore;
-import com.ayush.chat.core.config.InfrastructureService;
+import com.ayush.chat.core.connector.runtime.PlatformConnectors;
 import com.ayush.chat.core.config.PlatformProperties;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.util.Ids;
 import com.ayush.chat.tenant.Feature;
 import com.ayush.chat.tenant.TenantDirectory;
 import com.ayush.chat.tenant.TenantSnapshot;
 import com.ayush.chat.tenant.UsageService;
+import org.springframework.boot.autoconfigure.web.servlet.MultipartProperties;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -52,7 +53,7 @@ public class MediaService {
         return INLINE_SAFE.contains(base);
     }
 
-    private final InfrastructureService infrastructure;
+    private final PlatformConnectors infrastructure;
     private final TenantDirectory tenants;
     private final UsageService usage;
     private final PlatformProperties properties;
@@ -64,8 +65,11 @@ public class MediaService {
     public record Download(Optional<String> redirect, BlobStore.BlobObject object) {
     }
 
-    public MediaService(InfrastructureService infrastructure, TenantDirectory tenants, UsageService usage,
-                        PlatformProperties properties) throws Exception {
+    private final MultipartProperties multipart;
+
+    public MediaService(PlatformConnectors infrastructure, TenantDirectory tenants, UsageService usage,
+                        PlatformProperties properties, MultipartProperties multipart) throws Exception {
+        this.multipart = multipart;
         this.infrastructure = infrastructure;
         this.tenants = tenants;
         this.usage = usage;
@@ -78,21 +82,21 @@ public class MediaService {
     public MediaView upload(String slug, MultipartFile file) {
         TenantSnapshot tenant = tenants.requireUsable(slug);
         if (file == null || file.isEmpty()) {
-            throw ApiException.badRequest("file is required");
+            throw DomainException.badRequest("file is required");
         }
         String mime = file.getContentType() == null ? "application/octet-stream" : file.getContentType().toLowerCase(Locale.ROOT);
         boolean media = isInlineSafe(mime);
         tenant.require(media ? Feature.MEDIA_SHARING : Feature.FILE_SHARING);
-        long maxBytes = Math.min((long) tenant.settings().maxFileSizeMb() * 1024 * 1024, properties.getMedia().getMaxUploadBytes());
+        long maxBytes = Math.min((long) tenant.settings().maxFileSizeMb() * 1024 * 1024, multipart.getMaxFileSize().toBytes());
         if (file.getSize() > maxBytes) {
-            throw ApiException.badRequest("File exceeds the " + (maxBytes / (1024 * 1024)) + " MB limit");
+            throw DomainException.badRequest("File exceeds the " + (maxBytes / (1024 * 1024)) + " MB limit");
         }
         usage.consumeStorage(tenant, file.getSize());
         String mediaId = Ids.newId() + extension(file.getOriginalFilename());
         try (InputStream in = file.getInputStream()) {
             infrastructure.blobs().put(blobKey(slug, mediaId), in, file.getSize(), mime);
         } catch (IOException e) {
-            throw ApiException.unavailable("Upload failed: " + e.getMessage());
+            throw DomainException.unavailable("Upload failed: " + e.getMessage());
         }
         return new MediaView(mediaId, url(slug, mediaId), mime, file.getSize(), sanitize(file.getOriginalFilename()));
     }
@@ -100,7 +104,7 @@ public class MediaService {
     public Download download(String slug, String mediaId, String signature) {
         if (!MEDIA_ID.matcher(mediaId).matches() || signature == null || !MessageDigest.isEqual(
                 sign(slug, mediaId).getBytes(StandardCharsets.UTF_8), signature.getBytes(StandardCharsets.UTF_8))) {
-            throw ApiException.notFound("Media");
+            throw DomainException.notFound("Media");
         }
         tenants.requireUsable(slug);
         BlobStore blobs = infrastructure.blobs();
@@ -108,7 +112,7 @@ public class MediaService {
         if (presigned.isPresent()) {
             return new Download(presigned, null);
         }
-        return new Download(Optional.empty(), blobs.get(blobKey(slug, mediaId)).orElseThrow(() -> ApiException.notFound("Media")));
+        return new Download(Optional.empty(), blobs.get(blobKey(slug, mediaId)).orElseThrow(() -> DomainException.notFound("Media")));
     }
 
     public String url(String slug, String mediaId) {

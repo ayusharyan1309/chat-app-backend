@@ -1,14 +1,14 @@
 package com.ayush.chat.chat.api;
 
-import com.ayush.chat.admin.AuditService;
+import com.ayush.chat.audit.AuditService;
 import com.ayush.chat.auth.JwtService;
 import com.ayush.chat.auth.Principals.TenantServerPrincipal;
 import com.ayush.chat.chat.ChatService;
 import com.ayush.chat.chat.Views.MessageView;
 import com.ayush.chat.chat.Views.UserView;
 import com.ayush.chat.core.cluster.ClusterService;
-import com.ayush.chat.core.config.TenantConnectors;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.connector.runtime.TenantConnectors;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.store.model.ChatMessage;
 import com.ayush.chat.store.model.StoreStats;
 import com.ayush.chat.tenant.Feature;
@@ -88,13 +88,13 @@ public class ServerApiController {
     @PostMapping("/tokens")
     public TokenResponse token(@AuthenticationPrincipal TenantServerPrincipal server, @RequestBody TokenRequest request) {
         if (request.userId() == null || request.userId().isBlank()) {
-            throw ApiException.badRequest("userId is required");
+            throw DomainException.badRequest("userId is required");
         }
         TenantSnapshot t = tenants.requireUsable(server.tenant());
         chat.requireActiveUser(t.slug(), request.userId());
         int ttl = request.ttlMinutes() != null ? request.ttlMinutes() : t.auth().tokenTtlMinutes();
         if (ttl < 1 || ttl > 60 * 24 * 30) {
-            throw ApiException.badRequest("ttlMinutes must be between 1 and 43200");
+            throw DomainException.badRequest("ttlMinutes must be between 1 and 43200");
         }
         JwtService.IssuedToken token = jwt.issueUser(t.slug(), request.userId(), Duration.ofMinutes(ttl));
         return new TokenResponse(token.token(), token.expiresAt());
@@ -105,7 +105,7 @@ public class ServerApiController {
     public MessageView send(@AuthenticationPrincipal TenantServerPrincipal server, @PathVariable String id,
                             @RequestBody ServerMessageRequest request) {
         if (request.senderId() == null) {
-            throw ApiException.badRequest("senderId is required");
+            throw DomainException.badRequest("senderId is required");
         }
         return chat.sendAsServer(server.tenant(), request.senderId(), id, new ChatService.SendInput(request.clientMsgId(),
                 request.type(), request.content(), request.attachment(), null, false, request.metadata())).message();

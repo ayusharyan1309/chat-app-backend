@@ -4,6 +4,7 @@ import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorFactory;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import com.ayush.chat.store.MessageStore;
 import org.springframework.stereotype.Component;
@@ -23,7 +24,7 @@ public class CassandraMessageStoreFactory implements ConnectorFactory<MessageSto
                 "Wide-column store for very high write volumes. Query-first tables partitioned by tenant; "
                         + "per-conversation sequence numbers via lightweight transactions; messages bucketed "
                         + "1000 per partition. Tables are created on connect.",
-                "Wide-column", "BETA",
+                "Wide-column", Maturity.BETA,
                 List.of("ScyllaDB", "Amazon Keyspaces", "Azure Managed Instance for Apache Cassandra", "DataStax Astra"),
                 List.of(ConfigField.of("contactPoints", "Contact points").required()
                                 .placeholder("127.0.0.1:9042,10.0.0.2:9042")

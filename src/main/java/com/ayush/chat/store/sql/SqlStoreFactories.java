@@ -3,6 +3,7 @@ package com.ayush.chat.store.sql;
 import com.ayush.chat.core.connector.ConfigField;
 import com.ayush.chat.core.connector.ConnectorDescriptor;
 import com.ayush.chat.core.connector.ConnectorKind;
+import com.ayush.chat.core.connector.Maturity;
 import com.ayush.chat.core.connector.ConnectorSettings;
 import org.springframework.stereotype.Component;
 
@@ -24,7 +25,7 @@ public final class SqlStoreFactories {
         public ConnectorDescriptor descriptor() {
             return new ConnectorDescriptor(ConnectorKind.MESSAGE_STORE, "h2", "H2 (embedded)",
                     "Embedded SQL database stored in a local file. Great for development and single-node installs.",
-                    "SQL", "GA", List.of(),
+                    "SQL", Maturity.GA, List.of(),
                     commonFields("jdbc:h2:file:./data/chat-store", "jdbc:h2:file:./data/chat-store", true));
         }
     }
@@ -35,7 +36,7 @@ public final class SqlStoreFactories {
         public ConnectorDescriptor descriptor() {
             return new ConnectorDescriptor(ConnectorKind.MESSAGE_STORE, "postgresql", "PostgreSQL",
                     "PostgreSQL or any wire-compatible database. Recommended default for production.",
-                    "SQL", "GA",
+                    "SQL", Maturity.GA,
                     List.of("Amazon RDS / Aurora PostgreSQL", "Google Cloud SQL / AlloyDB", "Azure Database for PostgreSQL",
                             "Neon", "Supabase", "CockroachDB", "YugabyteDB", "Timescale"),
                     commonFields("jdbc:postgresql://localhost:5432/chat", null, true));
@@ -48,7 +49,7 @@ public final class SqlStoreFactories {
         public ConnectorDescriptor descriptor() {
             return new ConnectorDescriptor(ConnectorKind.MESSAGE_STORE, "mysql", "MySQL / MariaDB",
                     "MySQL 8+ or MariaDB 10.5+, and MySQL-compatible distributed databases.",
-                    "SQL", "GA",
+                    "SQL", Maturity.GA,
                     List.of("MariaDB", "Amazon RDS / Aurora MySQL", "Google Cloud SQL for MySQL", "Azure Database for MySQL",
                             "PlanetScale", "TiDB"),
                     commonFields("jdbc:mysql://localhost:3306/chat", null, true));
@@ -69,7 +70,7 @@ public final class SqlStoreFactories {
                     .build());
             return new ConnectorDescriptor(ConnectorKind.MESSAGE_STORE, "supabase", "Supabase",
                     "Supabase Postgres via its connection pooler. Uses the same schema as PostgreSQL with TLS enforced.",
-                    "SQL", "GA", List.of("Supabase"), fields);
+                    "SQL", Maturity.GA, List.of("Supabase"), fields);
         }
 
         @Override

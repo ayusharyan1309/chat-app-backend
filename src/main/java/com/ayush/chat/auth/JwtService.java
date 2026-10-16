@@ -1,7 +1,7 @@
 package com.ayush.chat.auth;
 
 import com.ayush.chat.core.config.PlatformProperties;
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
@@ -82,7 +82,7 @@ public class JwtService {
         try {
             claims = Jwts.parser().verifyWith(key).requireIssuer(ISSUER).build().parseSignedClaims(token).getPayload();
         } catch (JwtException | IllegalArgumentException e) {
-            throw ApiException.unauthorized("Invalid or expired token");
+            throw DomainException.unauthorized("Invalid or expired token");
         }
         if (claims.getAudience().contains(AUD_ADMIN)) {
             return new Principals.AdminPrincipal(Long.valueOf(claims.getSubject()), claims.get("email", String.class),
@@ -91,6 +91,6 @@ public class JwtService {
         if (claims.getAudience().contains(AUD_USER)) {
             return new Principals.ChatUserPrincipal(claims.get("tid", String.class), claims.getSubject());
         }
-        throw ApiException.unauthorized("Unknown token audience");
+        throw DomainException.unauthorized("Unknown token audience");
     }
 }

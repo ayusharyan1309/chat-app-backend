@@ -1,13 +1,14 @@
-package com.ayush.chat.core.connector;
+package com.ayush.chat.core.connector.runtime;
 
+import com.ayush.chat.core.connector.Connector;
+import com.ayush.chat.core.connector.ConnectorConfig;
+import com.ayush.chat.core.connector.ConnectorRegistry;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
@@ -19,15 +20,9 @@ import java.util.function.BiConsumer;
 @Slf4j
 public class ConnectorHolder<T extends Connector> implements AutoCloseable {
 
-    private static final ScheduledExecutorService RETIRER = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "connector-retirer");
-        t.setDaemon(true);
-        return t;
-    });
-
     private final String name;
     private final ConnectorRegistry registry;
-    private final long graceMillis;
+    private final Duration retireGrace;
     private final AtomicReference<Active<T>> active = new AtomicReference<>();
     private final List<BiConsumer<T, T>> swapListeners = new CopyOnWriteArrayList<>();
     /** Not synchronized: connecting blocks, and must not pin virtual threads. */
@@ -36,10 +31,10 @@ public class ConnectorHolder<T extends Connector> implements AutoCloseable {
     private record Active<T>(ConnectorConfig config, T connector) {
     }
 
-    public ConnectorHolder(String name, ConnectorRegistry registry, long graceMillis) {
+    public ConnectorHolder(String name, ConnectorRegistry registry, Duration retireGrace) {
         this.name = name;
         this.registry = registry;
-        this.graceMillis = graceMillis;
+        this.retireGrace = retireGrace;
     }
 
     /** Listener receives (previous, next); previous is null on first activation. */
@@ -94,7 +89,7 @@ public class ConnectorHolder<T extends Connector> implements AutoCloseable {
             }
         }
         if (previous != null) {
-            RETIRER.schedule(previous::close, graceMillis, TimeUnit.MILLISECONDS);
+            registry.retire(previous, retireGrace);
         }
         return true;
     }

@@ -1,6 +1,6 @@
 package com.ayush.chat.auth;
 
-import com.ayush.chat.core.error.ApiException;
+import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.tenant.TenantConfig;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
@@ -62,7 +62,7 @@ public class ExternalTokenVerifier {
                 } else if (config.jwtSecret() != null) {
                     parser.verifyWith(Keys.hmacShaKeyFor(config.jwtSecret().getBytes(StandardCharsets.UTF_8)));
                 } else {
-                    throw ApiException.badRequest("Tenant JWT auth is not configured");
+                    throw DomainException.badRequest("Tenant JWT auth is not configured");
                 }
                 if (config.jwtIssuer() != null) {
                     parser.requireIssuer(config.jwtIssuer());
@@ -71,17 +71,17 @@ public class ExternalTokenVerifier {
                     parser.requireAudience(config.jwtAudience());
                 }
             }
-            default -> throw ApiException.badRequest("External authentication is not enabled for this tenant");
+            default -> throw DomainException.badRequest("External authentication is not enabled for this tenant");
         }
         Claims claims;
         try {
             claims = parser.build().parseSignedClaims(token).getPayload();
         } catch (JwtException | IllegalArgumentException e) {
-            throw ApiException.unauthorized("External token rejected: " + e.getMessage());
+            throw DomainException.unauthorized("External token rejected: " + e.getMessage());
         }
         String userId = claimString(claims, config.userIdClaim() == null ? "sub" : config.userIdClaim());
         if (userId == null || userId.isBlank()) {
-            throw ApiException.unauthorized("External token has no user id claim");
+            throw DomainException.unauthorized("External token has no user id claim");
         }
         return new Identity(userId, claimString(claims, config.nameClaim() == null ? "name" : config.nameClaim()),
                 claimString(claims, config.emailClaim() == null ? "email" : config.emailClaim()));
@@ -130,7 +130,7 @@ public class ExternalTokenVerifier {
             } catch (Exception e) {
                 log.warn("Fetching JWKS {} failed: {}", url, e.getMessage());
                 if (cached == null) {
-                    throw ApiException.unavailable("Cannot fetch signing keys from " + url);
+                    throw DomainException.unavailable("Cannot fetch signing keys from " + url);
                 }
             }
         }

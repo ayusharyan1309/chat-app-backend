@@ -1,7 +1,7 @@
 package com.ayush.chat.chat;
 
 import com.ayush.chat.chat.event.DomainEvent;
-import com.ayush.chat.core.config.TenantConnectors;
+import com.ayush.chat.core.connector.runtime.TenantConnectors;
 import com.ayush.chat.push.PushSender;
 import com.ayush.chat.store.MessageStore;
 import com.ayush.chat.store.model.ChatUser;
