@@ -1,8 +1,9 @@
 package com.ayush.chat.chat.api;
 
 import com.ayush.chat.auth.Principals.ChatUserPrincipal;
-import com.ayush.chat.chat.ChatService;
 import com.ayush.chat.chat.Views.UserView;
+import com.ayush.chat.chat.application.BlockService;
+import com.ayush.chat.chat.application.UserDirectoryService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -28,7 +29,8 @@ import java.util.List;
 @RequiredArgsConstructor
 public class UserController {
 
-    private final ChatService chat;
+    private final UserDirectoryService users;
+    private final BlockService blocks;
 
     public record ProfileUpdate(String displayName, String avatarUrl, String about) {
     }
@@ -38,51 +40,51 @@ public class UserController {
 
     @GetMapping("/me")
     public UserView me(@AuthenticationPrincipal ChatUserPrincipal me) {
-        return chat.getUser(me.tenant(), me.userId());
+        return users.get(me.tenant(), me.userId());
     }
 
     @PatchMapping("/me")
     public UserView updateMe(@AuthenticationPrincipal ChatUserPrincipal me, @RequestBody ProfileUpdate update) {
-        return chat.updateProfile(me.tenant(), me.userId(), update.displayName(), update.avatarUrl(), update.about());
+        return users.updateProfile(me.tenant(), me.userId(), update.displayName(), update.avatarUrl(), update.about());
     }
 
     @PostMapping("/me/devices")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void addDevice(@AuthenticationPrincipal ChatUserPrincipal me, @RequestBody DeviceRequest request) {
-        chat.addDevice(me.tenant(), me.userId(), request.token());
+        users.addDevice(me.tenant(), me.userId(), request.token());
     }
 
     @DeleteMapping("/me/devices/{token}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void removeDevice(@AuthenticationPrincipal ChatUserPrincipal me, @PathVariable String token) {
-        chat.removeDevices(me.tenant(), me.userId(), List.of(token));
+        users.removeDevices(me.tenant(), me.userId(), List.of(token));
     }
 
     @GetMapping("/users")
     public List<UserView> search(@AuthenticationPrincipal ChatUserPrincipal me, @RequestParam(required = false) String q,
                                  @RequestParam(defaultValue = "20") int limit) {
-        return chat.searchUsers(me.tenant(), me.userId(), q, 0, limit, false);
+        return users.search(me.tenant(), me.userId(), q, limit);
     }
 
     @GetMapping("/users/{id}")
     public UserView user(@AuthenticationPrincipal ChatUserPrincipal me, @PathVariable String id) {
-        return chat.getUser(me.tenant(), id);
+        return users.get(me.tenant(), id);
     }
 
     @GetMapping("/blocks")
     public List<String> blocks(@AuthenticationPrincipal ChatUserPrincipal me) {
-        return chat.listBlocked(me.tenant(), me.userId());
+        return blocks.listBlocked(me.tenant(), me.userId());
     }
 
     @PutMapping("/blocks/{userId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void block(@AuthenticationPrincipal ChatUserPrincipal me, @PathVariable String userId) {
-        chat.setBlocked(me.tenant(), me.userId(), userId, true);
+        blocks.setBlocked(me.tenant(), me.userId(), userId, true);
     }
 
     @DeleteMapping("/blocks/{userId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void unblock(@AuthenticationPrincipal ChatUserPrincipal me, @PathVariable String userId) {
-        chat.setBlocked(me.tenant(), me.userId(), userId, false);
+        blocks.setBlocked(me.tenant(), me.userId(), userId, false);
     }
 }

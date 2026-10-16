@@ -1,91 +1,69 @@
 package com.ayush.chat.auth;
 
-import com.ayush.chat.auth.AuthRepositories.AdminUserRepository;
-import com.ayush.chat.core.connector.runtime.PlatformConnectors;
+import com.ayush.chat.audit.AuditAction;
+import com.ayush.chat.audit.AuditService;
+import com.ayush.chat.cache.CacheKeys;
+import com.ayush.chat.cache.CacheStore;
 import com.ayush.chat.core.config.PlatformProperties;
+import com.ayush.chat.core.connector.runtime.PlatformConnectors;
 import com.ayush.chat.core.error.DomainException;
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.Optional;
 import java.util.Locale;
 
 /**
- * Dashboard operators: login (with brute-force throttling), bootstrap owner and admin management.
+ * Dashboard operators: login with brute-force throttling, and admin management. Role rules
+ * (only owners create or remove owners; the last owner stays) are enforced here, not in controllers.
  */
-@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AdminAuthService {
 
-    private static final int MAX_FAILED_ATTEMPTS = 10;
-    private static final int MAX_FAILED_ATTEMPTS_PER_ACCOUNT = 50;
+    private static final int MIN_PASSWORD_LENGTH = 10;
 
     private final AdminUserRepository admins;
+    private final AdminDirectory directory;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwt;
     private final PlatformProperties properties;
-    private final PlatformConnectors infrastructure;
+    private final PlatformConnectors platform;
+    private final AuditService audit;
 
     public record LoginResult(JwtService.IssuedToken token, AdminUser admin) {
     }
 
-    /** Admin id -> current role (empty when deleted or inactive), so revocations bite within seconds. */
-    private final Cache<Long, Optional<AdminUser.Role>> activeRoles = Caffeine.newBuilder()
-            .expireAfterWrite(Duration.ofSeconds(15)).maximumSize(10_000).build();
-
-    /** The admin's current role, or empty when the account no longer exists or is inactive. */
-    public Optional<AdminUser.Role> currentRole(Long id) {
-        return activeRoles.get(id, k -> admins.findById(k).filter(AdminUser::isActive).map(AdminUser::getRole));
-    }
-
-    @PostConstruct
-    void bootstrapOwner() {
-        if (admins.count() > 0) {
-            return;
-        }
-        PlatformProperties.BootstrapAdmin bootstrap = properties.getSecurity().getBootstrapAdmin();
-        AdminUser owner = new AdminUser();
-        owner.setEmail(bootstrap.getEmail().toLowerCase(Locale.ROOT));
-        owner.setName(bootstrap.getName());
-        owner.setRole(AdminUser.Role.OWNER);
-        owner.setPasswordHash(passwordEncoder.encode(bootstrap.getPassword()));
-        admins.save(owner);
-        log.warn("Created bootstrap owner {} — change the password after first login.", owner.getEmail());
-    }
-
+    /**
+     * Two failure windows: per account and IP (typos) and per account across all IPs (distributed
+     * guessing). Unknown accounts are counted too, so responses never reveal which emails exist.
+     */
     @Transactional
     public LoginResult login(String email, String password, String ip) {
         if (email == null || password == null) {
             throw DomainException.badRequest("email and password are required");
         }
-        String normalized = email.trim().toLowerCase(Locale.ROOT);
-        // Two windows: per account+IP (normal typos) and per account across all IPs (distributed guessing).
-        String ipKey = "login-fail:" + normalized + ":" + ip;
-        String accountKey = "login-fail:" + normalized;
-        long ipFailures = infrastructure.cache().get(ipKey).map(Long::parseLong).orElse(0L);
-        long accountFailures = infrastructure.cache().get(accountKey).map(Long::parseLong).orElse(0L);
-        if (ipFailures >= MAX_FAILED_ATTEMPTS || accountFailures >= MAX_FAILED_ATTEMPTS_PER_ACCOUNT) {
-            throw DomainException.rateLimited("Too many failed attempts. Try again in 15 minutes.");
+        PlatformProperties.AdminLogin limits = properties.getAdminLogin();
+        String normalized = normalize(email);
+        String ipKey = CacheKeys.loginFailures(normalized, ip);
+        String accountKey = CacheKeys.loginFailures(normalized);
+        CacheStore cache = platform.cache();
+        if (count(cache, ipKey) >= limits.getMaxFailuresPerAccountAndIp()
+                || count(cache, accountKey) >= limits.getMaxFailuresPerAccount()) {
+            throw DomainException.rateLimited("Too many failed attempts. Try again in "
+                    + limits.getFailureWindow().toMinutes() + " minutes.");
         }
         AdminUser admin = admins.findByEmailIgnoreCase(normalized).filter(AdminUser::isActive).orElse(null);
         if (admin == null || !passwordEncoder.matches(password, admin.getPasswordHash())) {
-            infrastructure.cache().increment(ipKey, 1, Duration.ofMinutes(15));
-            infrastructure.cache().increment(accountKey, 1, Duration.ofMinutes(15));
+            cache.increment(ipKey, 1, limits.getFailureWindow());
+            cache.increment(accountKey, 1, limits.getFailureWindow());
             throw DomainException.unauthorized("Invalid email or password");
         }
-        infrastructure.cache().delete(ipKey);
+        cache.delete(ipKey);
         admin.setLastLoginAt(Instant.now());
-        admins.save(admin);
         return new LoginResult(jwt.issueAdmin(admin), admin);
     }
 
@@ -100,7 +78,11 @@ public class AdminAuthService {
     }
 
     @Transactional
-    public AdminUser create(String email, String name, String password, AdminUser.Role role) {
+    public AdminUser create(Principals.AdminPrincipal actor, String email, String name, String password, AdminUser.Role role) {
+        AdminUser.Role effectiveRole = role == null ? AdminUser.Role.VIEWER : role;
+        if (effectiveRole == AdminUser.Role.OWNER && actor.role() != AdminUser.Role.OWNER) {
+            throw DomainException.forbidden("Only owners can create owners");
+        }
         if (email == null || !email.contains("@")) {
             throw DomainException.badRequest("A valid email is required");
         }
@@ -109,43 +91,56 @@ public class AdminAuthService {
             throw DomainException.conflict("An admin with this email already exists");
         }
         AdminUser admin = new AdminUser();
-        admin.setEmail(email.trim().toLowerCase(Locale.ROOT));
+        admin.setEmail(normalize(email));
         admin.setName(name);
-        admin.setRole(role == null ? AdminUser.Role.VIEWER : role);
+        admin.setRole(effectiveRole);
         admin.setPasswordHash(passwordEncoder.encode(password));
-        return admins.save(admin);
+        admins.save(admin);
+        audit.record(AuditAction.ADMIN_CREATED, admin.getEmail(), null, "role=" + admin.getRole());
+        return admin;
     }
 
     @Transactional
-    public void delete(Long id, Long actorId, AdminUser.Role actorRole) {
-        if (id.equals(actorId)) {
+    public void delete(Principals.AdminPrincipal actor, Long id) {
+        if (id.equals(actor.id())) {
             throw DomainException.badRequest("You cannot delete your own account");
         }
         AdminUser admin = admins.findById(id).orElseThrow(() -> DomainException.notFound("Admin"));
-        if (admin.getRole() == AdminUser.Role.OWNER && actorRole != AdminUser.Role.OWNER) {
-            throw DomainException.forbidden("Only owners can remove owners");
-        }
-        if (admin.getRole() == AdminUser.Role.OWNER && admins.countByRoleAndActiveTrue(AdminUser.Role.OWNER) <= 1) {
-            throw DomainException.conflict("Cannot delete the last owner");
+        if (admin.getRole() == AdminUser.Role.OWNER) {
+            if (actor.role() != AdminUser.Role.OWNER) {
+                throw DomainException.forbidden("Only owners can remove owners");
+            }
+            if (admins.countByRoleAndActiveTrue(AdminUser.Role.OWNER) <= 1) {
+                throw DomainException.conflict("Cannot delete the last owner");
+            }
         }
         admins.delete(admin);
-        activeRoles.invalidate(id);
+        directory.forget(id);
+        audit.record(AuditAction.ADMIN_DELETED, String.valueOf(id), null, admin.getEmail());
     }
 
     @Transactional
-    public void changePassword(Long id, String current, String next) {
-        AdminUser admin = get(id);
+    public void changePassword(Principals.AdminPrincipal actor, String current, String next) {
+        AdminUser admin = get(actor.id());
         if (current == null || !passwordEncoder.matches(current, admin.getPasswordHash())) {
             throw DomainException.badRequest("Current password is incorrect");
         }
         validatePassword(next);
         admin.setPasswordHash(passwordEncoder.encode(next));
-        admins.save(admin);
+        audit.record(AuditAction.ADMIN_PASSWORD_CHANGED, admin.getEmail(), null, null);
+    }
+
+    private static long count(CacheStore cache, String key) {
+        return cache.get(key).map(Long::parseLong).orElse(0L);
+    }
+
+    private static String normalize(String email) {
+        return email.trim().toLowerCase(Locale.ROOT);
     }
 
     private static void validatePassword(String password) {
-        if (password == null || password.length() < 10) {
-            throw DomainException.badRequest("Password must be at least 10 characters");
+        if (password == null || password.length() < MIN_PASSWORD_LENGTH) {
+            throw DomainException.badRequest("Password must be at least " + MIN_PASSWORD_LENGTH + " characters");
         }
     }
 }

@@ -1,20 +1,24 @@
 package com.ayush.chat.chat.api;
 
-import com.ayush.chat.audit.AuditService;
 import com.ayush.chat.auth.JwtService;
 import com.ayush.chat.auth.Principals.TenantServerPrincipal;
-import com.ayush.chat.chat.ChatService;
+import com.ayush.chat.auth.UserTokenService;
 import com.ayush.chat.chat.Views.MessageView;
 import com.ayush.chat.chat.Views.UserView;
+import com.ayush.chat.chat.application.MessageService;
+import com.ayush.chat.chat.application.UserDirectoryService;
+import com.ayush.chat.chat.application.UserDirectoryService.UserInput;
+import com.ayush.chat.core.api.Page;
 import com.ayush.chat.core.cluster.ClusterService;
 import com.ayush.chat.core.connector.runtime.TenantConnectors;
 import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.store.model.ChatMessage;
 import com.ayush.chat.store.model.StoreStats;
 import com.ayush.chat.tenant.Feature;
+import com.ayush.chat.tenant.QuotaService;
 import com.ayush.chat.tenant.TenantDirectory;
 import com.ayush.chat.tenant.TenantSnapshot;
-import com.ayush.chat.tenant.UsageService;
+import com.ayush.chat.tenant.UsageMeter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -30,7 +34,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -41,13 +45,16 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class ServerApiController {
 
-    private final ChatService chat;
-    private final JwtService jwt;
+    private static final int USAGE_HISTORY_DAYS = 30;
+
+    private final UserDirectoryService users;
+    private final MessageService messages;
+    private final UserTokenService tokens;
     private final TenantDirectory tenants;
     private final TenantConnectors connectors;
-    private final UsageService usage;
+    private final QuotaService quotas;
+    private final UsageMeter usage;
     private final ClusterService cluster;
-    private final AuditService audit;
 
     public record TokenRequest(String userId, Integer ttlMinutes) {
     }
@@ -59,30 +66,32 @@ public class ServerApiController {
                                        ChatMessage.Attachment attachment, Map<String, Object> metadata) {
     }
 
+    public record TenantStats(long users, long conversations, long messages, long messagesToday, int connections,
+                              List<UsageMeter.DailyUsage> usage) {
+    }
+
     @PostMapping("/users")
-    public UserView upsertUser(@AuthenticationPrincipal TenantServerPrincipal server, @RequestBody ChatService.UserInput input) {
-        return chat.upsertUser(server.tenant(), input);
+    public UserView upsertUser(@AuthenticationPrincipal TenantServerPrincipal server, @RequestBody UserInput input) {
+        return users.upsert(server.tenant(), input);
     }
 
     @GetMapping("/users")
-    public Map<String, Object> users(@AuthenticationPrincipal TenantServerPrincipal server,
-                                     @RequestParam(required = false) String q,
-                                     @RequestParam(defaultValue = "0") int offset,
-                                     @RequestParam(defaultValue = "50") int limit) {
-        return Map.of("items", chat.searchUsers(server.tenant(), null, q, offset, limit, true),
-                "total", chat.countUsers(server.tenant()));
+    public Page<UserView> users(@AuthenticationPrincipal TenantServerPrincipal server,
+                                @RequestParam(required = false) String q,
+                                @RequestParam(defaultValue = "0") int offset,
+                                @RequestParam(defaultValue = "50") int limit) {
+        return new Page<>(users.list(server.tenant(), q, offset, limit), users.count(server.tenant()));
     }
 
     @GetMapping("/users/{id}")
     public UserView user(@AuthenticationPrincipal TenantServerPrincipal server, @PathVariable String id) {
-        return chat.getUser(server.tenant(), id);
+        return users.get(server.tenant(), id);
     }
 
     @DeleteMapping("/users/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void deactivate(@AuthenticationPrincipal TenantServerPrincipal server, @PathVariable String id) {
-        chat.deactivateUser(server.tenant(), id);
-        audit.record("user.deactivated", "user", id, server.tenant(), null);
+        users.deactivate(server.tenant(), id);
     }
 
     @PostMapping("/tokens")
@@ -91,12 +100,8 @@ public class ServerApiController {
             throw DomainException.badRequest("userId is required");
         }
         TenantSnapshot t = tenants.requireUsable(server.tenant());
-        chat.requireActiveUser(t.slug(), request.userId());
         int ttl = request.ttlMinutes() != null ? request.ttlMinutes() : t.auth().tokenTtlMinutes();
-        if (ttl < 1 || ttl > 60 * 24 * 30) {
-            throw DomainException.badRequest("ttlMinutes must be between 1 and 43200");
-        }
-        JwtService.IssuedToken token = jwt.issueUser(t.slug(), request.userId(), Duration.ofMinutes(ttl));
+        JwtService.IssuedToken token = tokens.issue(t.slug(), request.userId(), Duration.ofMinutes(ttl));
         return new TokenResponse(token.token(), token.expiresAt());
     }
 
@@ -107,22 +112,17 @@ public class ServerApiController {
         if (request.senderId() == null) {
             throw DomainException.badRequest("senderId is required");
         }
-        return chat.sendAsServer(server.tenant(), request.senderId(), id, new ChatService.SendInput(request.clientMsgId(),
-                request.type(), request.content(), request.attachment(), null, false, request.metadata())).message();
+        return messages.sendAsServer(server.tenant(), request.senderId(), id, new MessageService.SendInput(
+                request.clientMsgId(), request.type(), request.content(), request.attachment(), null, false,
+                request.metadata())).message();
     }
 
     @GetMapping("/stats")
-    public Map<String, Object> stats(@AuthenticationPrincipal TenantServerPrincipal server) {
+    public TenantStats stats(@AuthenticationPrincipal TenantServerPrincipal server) {
         TenantSnapshot t = tenants.requireUsable(server.tenant());
         t.require(Feature.ANALYTICS);
         StoreStats stats = connectors.store(t.slug()).stats(t.slug());
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("users", stats.users());
-        out.put("conversations", stats.conversations());
-        out.put("messages", stats.messages());
-        out.put("messagesToday", usage.messagesToday(t.slug()));
-        out.put("connections", cluster.connections(t.slug()));
-        out.put("usage", usage.history(t.slug(), 30));
-        return out;
+        return new TenantStats(stats.users(), stats.conversations(), stats.messages(), quotas.messagesToday(t.slug()),
+                cluster.connections(t.slug()), usage.history(t.slug(), USAGE_HISTORY_DAYS));
     }
 }

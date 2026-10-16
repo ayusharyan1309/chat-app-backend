@@ -64,7 +64,8 @@ platform:
   config-poll-interval: ${CONFIG_POLL_INTERVAL:5s}
 
   security:
-    # 32+ random characters. Encrypts connector secrets at rest and signs media URLs.
+    # 32+ random characters. Encrypts connector secrets at rest; purpose-specific keys for media URL
+    # signing (and JWTs, when jwt-secret is blank) are derived from it. Never change it in place.
     master-key: ${PLATFORM_MASTER_KEY:}
     # Signs admin and user JWTs (derived from the master key when blank).
     jwt-secret: ${PLATFORM_JWT_SECRET:}
@@ -72,16 +73,71 @@ platform:
     allow-private-network-callbacks: ${PLATFORM_SECURITY_ALLOW_PRIVATE_NETWORK_CALLBACKS:false}
     admin-token-ttl: 12h
     user-token-ttl: 24h
+    # Bounds for every end-user token (server API, logins); impersonation tokens from the dashboard.
+    min-user-token-ttl: 5m
+    max-user-token-ttl: 30d
+    impersonation-token-ttl: 8h
     bootstrap-admin:
       email: ${ADMIN_EMAIL:admin@local}
       password: ${ADMIN_PASSWORD:admin12345}
       name: Platform Owner
 
-  bus:
-    topic-prefix: ""
+  # Dashboard brute-force protection (counted in the shared cache, so cluster-wide).
+  admin-login:
+    max-failures-per-account-and-ip: 10
+    max-failures-per-account: 50
+    failure-window: 15m
 
-  media:
-    max-upload-bytes: 104857600
+  bus:
+    topic-prefix: ${BUS_TOPIC_PREFIX:}
+
+  # ---------------------------------------------------------------------------------
+  # Tuning. The values below are the built-in defaults, listed so they are discoverable.
+  # ---------------------------------------------------------------------------------
+  realtime:
+    inbound-threads: 32
+    outbound-threads: 16
+    max-frame-size: 128KB
+    send-buffer-size: 1MB
+    send-time-limit: 20s
+    heartbeat: 20s
+  presence:
+    ttl: 60s
+    heartbeat: 20s
+    max-watched-users: 500
+  cluster:
+    node-ttl: 30s
+    heartbeat: 10s
+    slot-window: 256
+  connector-runtime:
+    retire-grace: 30s
+    tenant-failure-backoff: 5s
+  # Node-local cache lifetimes: upper bounds on staleness if a cluster invalidation is missed.
+  caches:
+    tenant-snapshot: 15s
+    user-status: 30s
+    membership: 10s
+    conversation: 30s
+    blocks: 10s
+    api-keys: 30s
+    admin-roles: 15s
+    webhook-targets: 30s
+  locks:
+    lease: 10s
+    max-wait: 3s
+  webhooks:
+    max-attempts: 5
+    initial-backoff: 10s
+    request-timeout: 10s
+    delivery-retention: 14d
+  metering:
+    usage-flush-interval: 30s
+    metrics-flush-interval: 5s
+    metrics-retention: 25h
+  jwks:
+    cache-ttl: 1h
+    min-refresh-interval: 60s
+    fetch-timeout: 5s
 
   # Default connectors. provider = one of the ids listed on the dashboard's Infrastructure page.
   connectors:

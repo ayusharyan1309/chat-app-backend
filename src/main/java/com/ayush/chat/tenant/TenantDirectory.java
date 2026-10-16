@@ -1,37 +1,36 @@
 package com.ayush.chat.tenant;
 
+import com.ayush.chat.core.config.PlatformProperties;
 import com.ayush.chat.core.crypto.SecretCipher;
 import com.ayush.chat.core.error.DomainException;
-import com.ayush.chat.core.util.Json;
-import com.ayush.chat.tenant.TenantRepositories.PlanRepository;
-import com.ayush.chat.tenant.TenantRepositories.TenantRepository;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.time.Duration;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Optional;
 import java.util.Set;
 
 /**
- * Resolves tenants to {@link TenantSnapshot}s with a short local cache. Changes made through
- * {@link TenantService} invalidate locally and are broadcast to other nodes; the TTL bounds
- * staleness if a broadcast is missed.
+ * Resolves tenants to immutable {@link TenantSnapshot}s with a short node-local cache. Changes
+ * invalidate it cluster-wide over the control channel; the TTL bounds staleness if a broadcast is
+ * missed.
  */
 @Service
-@RequiredArgsConstructor
 public class TenantDirectory {
 
     private final TenantRepository tenants;
     private final PlanRepository plans;
     private final SecretCipher cipher;
+    private final Cache<String, TenantSnapshot> cache;
 
-    private final Cache<String, Optional<TenantSnapshot>> cache = Caffeine.newBuilder()
-            .expireAfterWrite(Duration.ofSeconds(15))
-            .maximumSize(100_000)
-            .build();
+    public TenantDirectory(TenantRepository tenants, PlanRepository plans, SecretCipher cipher, PlatformProperties properties) {
+        this.tenants = tenants;
+        this.plans = plans;
+        this.cipher = cipher;
+        this.cache = Caffeine.newBuilder().expireAfterWrite(properties.getCaches().getTenantSnapshot()).maximumSize(100_000).build();
+    }
 
     /** Snapshot for a tenant, or 404. Does not check status — use {@link #requireUsable}. */
     public TenantSnapshot get(String slug) {
@@ -43,12 +42,14 @@ public class TenantDirectory {
 
     /** Only hits are cached; a miss is re-checked next time so a just-created tenant is visible at once. */
     public Optional<TenantSnapshot> find(String slug) {
-        Optional<TenantSnapshot> cached = cache.getIfPresent(slug);
+        TenantSnapshot cached = cache.getIfPresent(slug);
         if (cached != null) {
-            return cached;
+            return Optional.of(cached);
         }
-        Optional<TenantSnapshot> loaded = load(slug);
-        loaded.ifPresent(snapshot -> cache.put(slug, loaded));
+        Optional<TenantSnapshot> loaded = tenants.findBySlugWithFeatures(slug)
+                .filter(t -> t.getStatus() != Tenant.Status.DELETED)
+                .map(t -> snapshot(t, plans.findByCode(t.getPlanCode()).orElse(null)));
+        loaded.ifPresent(snapshot -> cache.put(slug, snapshot));
         return loaded;
     }
 
@@ -66,16 +67,8 @@ public class TenantDirectory {
         cache.invalidateAll();
     }
 
-    Optional<TenantSnapshot> load(String slug) {
-        return tenants.findBySlugWithFeatures(slug)
-                .filter(t -> t.getStatus() != Tenant.Status.DELETED)
-                .map(this::toSnapshot);
-    }
-
-    TenantSnapshot toSnapshot(Tenant tenant) {
-        Plan plan = plans.findByCode(tenant.getPlanCode()).orElse(null);
-        TenantLimits planLimits = plan != null ? plan.limits() : TenantLimits.NONE;
-        TenantLimits overrides = Optional.ofNullable(Json.read(tenant.getLimitsJson(), TenantLimits.class)).orElse(TenantLimits.NONE);
+    /** Snapshot of an entity already loaded (with its plan), bypassing the cache. */
+    public TenantSnapshot snapshot(Tenant tenant, Plan plan) {
         return new TenantSnapshot(
                 tenant.getId(),
                 tenant.getSlug(),
@@ -83,41 +76,26 @@ public class TenantDirectory {
                 tenant.getStatus(),
                 tenant.getPlanCode(),
                 plan != null ? plan.getName() : tenant.getPlanCode(),
-                planLimits.overriddenBy(overrides),
-                settings(tenant),
-                branding(tenant),
-                auth(tenant, true),
-                effectiveFeatures(plan, tenant),
+                (plan != null ? plan.limitsOrNone() : TenantLimits.NONE).overriddenBy(tenant.getLimitOverrides()),
+                tenant.effectiveSettings(),
+                tenant.brandingOrDefault(),
+                decryptedAuth(tenant),
+                Collections.unmodifiableSet(effectiveFeatures(plan, tenant)),
                 tenant.getTrialEndsAt());
     }
 
-    TenantConfig.Settings settings(Tenant tenant) {
-        return Optional.ofNullable(Json.read(tenant.getSettingsJson(), TenantConfig.Settings.class))
-                .orElse(TenantConfig.Settings.DEFAULT).withDefaults();
+    private TenantConfig.Auth decryptedAuth(Tenant tenant) {
+        TenantConfig.Auth auth = tenant.storedAuth();
+        String secret = auth.external().jwtSecret();
+        return secret == null ? auth : auth.withExternal(auth.external().withJwtSecret(cipher.decrypt(secret)));
     }
 
-    TenantConfig.Branding branding(Tenant tenant) {
-        return Optional.ofNullable(Json.read(tenant.getBrandingJson(), TenantConfig.Branding.class))
-                .orElse(TenantConfig.Branding.DEFAULT);
-    }
-
-    /** Auth config; secrets decrypted when {@code decrypt} is true. */
-    TenantConfig.Auth auth(Tenant tenant, boolean decrypt) {
-        TenantConfig.Auth auth = Optional.ofNullable(Json.read(tenant.getAuthJson(), TenantConfig.Auth.class))
-                .orElse(TenantConfig.Auth.DEFAULT).withDefaults();
-        TenantConfig.External ext = auth.external();
-        if (decrypt && ext.jwtSecret() != null) {
-            ext = new TenantConfig.External(ext.type(), ext.firebaseProjectId(), ext.jwtIssuer(), ext.jwtAudience(),
-                    ext.jwksUrl(), cipher.decrypt(ext.jwtSecret()), ext.userIdClaim(), ext.nameClaim(), ext.emailClaim());
-        }
-        return new TenantConfig.Auth(auth.devLoginEnabled(), auth.tokenTtlMinutes(), ext);
-    }
-
+    /** Core features, plus the plan's toggleable features, adjusted by the tenant's overrides. */
     static Set<Feature> effectiveFeatures(Plan plan, Tenant tenant) {
         Set<Feature> enabled = EnumSet.noneOf(Feature.class);
         enabled.addAll(Feature.core());
         if (plan != null) {
-            plan.featureIds().forEach(id -> Feature.fromId(id).filter(Feature::isToggleable).ifPresent(enabled::add));
+            plan.getFeatureIds().forEach(id -> Feature.fromId(id).filter(Feature::isToggleable).ifPresent(enabled::add));
         }
         for (TenantFeatureOverride override : tenant.getFeatureOverrides()) {
             Feature.fromId(override.getFeatureId()).filter(Feature::isToggleable).ifPresent(f -> {
@@ -128,13 +106,17 @@ public class TenantDirectory {
                 }
             });
         }
-        return enabled.isEmpty() ? EnumSet.noneOf(Feature.class) : EnumSet.copyOf(enabled);
+        return enabled;
     }
 
-    static String sourceOf(Feature feature, Plan plan, Tenant tenant) {
-        if (feature.isCore()) return "core";
-        if (feature.getStatus() == Feature.Status.PLANNED) return "planned";
+    static FeatureSource sourceOf(Feature feature, Tenant tenant) {
+        if (feature.isCore()) {
+            return FeatureSource.CORE;
+        }
+        if (feature.getStatus() == Feature.Status.PLANNED) {
+            return FeatureSource.PLANNED;
+        }
         boolean overridden = tenant.getFeatureOverrides().stream().anyMatch(o -> o.getFeatureId().equals(feature.getId()));
-        return overridden ? "override" : "plan";
+        return overridden ? FeatureSource.OVERRIDE : FeatureSource.PLAN;
     }
 }

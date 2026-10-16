@@ -3,6 +3,7 @@ package com.ayush.chat.tenant;
 import com.ayush.chat.core.error.DomainException;
 
 import java.time.Instant;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -24,7 +25,7 @@ public record TenantSnapshot(
         Instant trialEndsAt) {
 
     public boolean isUsable() {
-        return status == Tenant.Status.ACTIVE || status == Tenant.Status.TRIAL;
+        return status.isUsable();
     }
 
     public boolean has(Feature feature) {
@@ -39,7 +40,7 @@ public record TenantSnapshot(
 
     public void requireUsable() {
         if (!isUsable()) {
-            throw DomainException.forbidden("Tenant '" + slug + "' is " + status.name().toLowerCase());
+            throw DomainException.forbidden("Tenant '" + slug + "' is " + status.name().toLowerCase(Locale.ROOT));
         }
     }
 }

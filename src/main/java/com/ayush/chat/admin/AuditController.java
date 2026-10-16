@@ -1,6 +1,6 @@
 package com.ayush.chat.admin;
 
-import com.ayush.chat.audit.AuditEntry;
+import com.ayush.chat.audit.AuditEntryView;
 import com.ayush.chat.audit.AuditService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,7 +18,7 @@ public class AuditController {
     private final AuditService audit;
 
     @GetMapping
-    public List<AuditEntry> list(@RequestParam(required = false) String tenant,
+    public List<AuditEntryView> list(@RequestParam(required = false) String tenant,
                                  @RequestParam(required = false) Long before,
                                  @RequestParam(defaultValue = "100") int limit) {
         return audit.list(tenant, before, limit);

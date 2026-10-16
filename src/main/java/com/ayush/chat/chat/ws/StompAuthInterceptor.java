@@ -2,13 +2,12 @@ package com.ayush.chat.chat.ws;
 
 import com.ayush.chat.auth.JwtService;
 import com.ayush.chat.auth.Principals.ChatUserPrincipal;
-import com.ayush.chat.chat.ChatService;
+import com.ayush.chat.auth.ActiveUserCheck;
 import com.ayush.chat.core.cluster.ClusterService;
 import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.tenant.TenantDirectory;
 import com.ayush.chat.tenant.TenantSnapshot;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageDeliveryException;
@@ -30,8 +29,7 @@ public class StompAuthInterceptor implements ChannelInterceptor {
     private final JwtService jwt;
     private final TenantDirectory tenants;
     private final ClusterService cluster;
-    /** Provider breaks the cycle broker config -> interceptor -> chat -> messaging template -> broker config. */
-    private final ObjectProvider<ChatService> chat;
+    private final ActiveUserCheck users;
 
     @Override
     public Message<?> preSend(Message<?> message, MessageChannel channel) {
@@ -82,7 +80,7 @@ public class StompAuthInterceptor implements ChannelInterceptor {
             throw DomainException.unauthorized("A user token is required");
         }
         TenantSnapshot tenant = tenants.requireUsable(principal.tenant());
-        chat.getObject().requireActiveUser(principal.tenant(), principal.userId());
+        users.requireActiveUser(principal.tenant(), principal.userId());
         Long max = tenant.limits().maxConnections();
         if (max != null && cluster.connections(tenant.slug()) >= max) {
             throw DomainException.quotaExceeded("Connection limit of " + max + " reached for this tenant");

@@ -1,16 +1,13 @@
 package com.ayush.chat.auth;
 
-import com.ayush.chat.chat.ChatService;
 import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.tenant.TenantDirectory;
-import com.ayush.chat.tenant.TenantSnapshot;
-import com.ayush.chat.tenant.UsageService;
+import com.ayush.chat.tenant.UsageMeter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -32,14 +29,15 @@ import java.util.Optional;
 public class PlatformAuthFilter extends OncePerRequestFilter {
 
     public static final String AUTH_ERROR_ATTRIBUTE = "platform.authError";
+    static final String API_KEY_HEADER = "X-API-Key";
+    private static final String BEARER = "Bearer ";
 
     private final JwtService jwt;
     private final ApiKeyService apiKeys;
+    private final AdminDirectory admins;
+    private final ActiveUserCheck users;
     private final TenantDirectory tenants;
-    private final UsageService usage;
-    /** Providers: the filter is built with the security chain, before these services are ready. */
-    private final ObjectProvider<ChatService> chat;
-    private final ObjectProvider<AdminAuthService> admins;
+    private final UsageMeter usage;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -53,33 +51,32 @@ public class PlatformAuthFilter extends OncePerRequestFilter {
     }
 
     private Optional<UsernamePasswordAuthenticationToken> authenticate(HttpServletRequest request) {
-        String apiKey = request.getHeader("X-API-Key");
+        String apiKey = request.getHeader(API_KEY_HEADER);
         if (apiKey != null && !apiKey.isBlank()) {
-            Principals.TenantServerPrincipal principal = apiKeys.authenticate(apiKey.trim())
+            Principals.TenantServerPrincipal server = apiKeys.authenticate(apiKey.trim())
                     .orElseThrow(() -> DomainException.unauthorized("Invalid or revoked API key"));
-            usage.recordApiCall(principal.tenant());
-            return Optional.of(token(principal, "ROLE_TENANT_SERVER"));
+            usage.recordApiCall(server.tenant());
+            return Optional.of(token(server, "ROLE_TENANT_SERVER"));
         }
         String header = request.getHeader("Authorization");
-        if (header == null || !header.startsWith("Bearer ")) {
+        if (header == null || !header.startsWith(BEARER)) {
             return Optional.empty();
         }
-        Object principal = jwt.verify(header.substring(7).trim());
-        if (principal instanceof Principals.AdminPrincipal admin) {
-            // Role comes from the database, not the token: deleted or demoted admins lose access quickly.
-            AdminUser.Role role = admins.getObject().currentRole(admin.id())
-                    .orElseThrow(() -> DomainException.unauthorized("Admin account no longer exists"));
-            Principals.AdminPrincipal current = new Principals.AdminPrincipal(admin.id(), admin.email(), role);
-            return Optional.of(token(current, "ROLE_" + role.name()));
-        }
-        Principals.ChatUserPrincipal user = (Principals.ChatUserPrincipal) principal;
-        TenantSnapshot tenant = tenants.find(user.tenant())
-                .orElseThrow(() -> DomainException.unauthorized("Tenant no longer exists"));
-        if (!tenant.isUsable()) {
-            throw DomainException.forbidden("Tenant '" + tenant.slug() + "' is " + tenant.status().name().toLowerCase());
-        }
-        chat.getObject().requireActiveUser(user.tenant(), user.userId());
-        return Optional.of(token(user, "ROLE_CHAT_USER"));
+        return Optional.of(switch (jwt.verify(header.substring(BEARER.length()).trim())) {
+            case Principals.AdminPrincipal admin -> {
+                // The role comes from the database, not the token: deleted or demoted admins lose access quickly.
+                AdminUser.Role role = admins.currentRole(admin.id())
+                        .orElseThrow(() -> DomainException.unauthorized("Admin account no longer exists"));
+                yield token(admin.withRole(role), "ROLE_" + role.name());
+            }
+            case Principals.ChatUserPrincipal user -> {
+                tenants.find(user.tenant())
+                        .orElseThrow(() -> DomainException.unauthorized("Tenant no longer exists"))
+                        .requireUsable();
+                users.requireActiveUser(user.tenant(), user.userId());
+                yield token(user, "ROLE_CHAT_USER");
+            }
+        });
     }
 
     private static UsernamePasswordAuthenticationToken token(Principal principal, String authority) {

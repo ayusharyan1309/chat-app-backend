@@ -5,9 +5,6 @@ import com.ayush.chat.core.connector.config.ConnectorConfigService;
 import com.ayush.chat.core.crypto.SecretCipher;
 import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.core.net.OutboundUrlPolicy;
-import com.ayush.chat.core.util.Json;
-import com.ayush.chat.tenant.TenantRepositories.PlanRepository;
-import com.ayush.chat.tenant.TenantRepositories.TenantRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -20,12 +17,11 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
- * Tenant lifecycle and configuration (admin operations). Every mutation invalidates the
- * {@link TenantDirectory} cache cluster-wide via {@link TenantChangedEvent}.
+ * Tenant lifecycle and configuration. Every mutation publishes a {@link TenantChangedEvent}, which
+ * invalidates cached snapshots cluster-wide once the transaction commits.
  */
 @Slf4j
 @Service
@@ -33,6 +29,11 @@ import java.util.regex.Pattern;
 public class TenantService {
 
     private static final Pattern SLUG = Pattern.compile("^[a-z0-9][a-z0-9-]{1,47}$");
+    private static final int MIN_TOKEN_TTL_MINUTES = 5;
+    private static final int MAX_TOKEN_TTL_MINUTES = 60 * 24 * 30;
+    private static final int MIN_HS256_SECRET_LENGTH = 32;
+    private static final int MAX_MESSAGE_LENGTH = 65_536;
+    private static final int MAX_FILE_SIZE_MB = 2048;
 
     private final TenantRepository tenants;
     private final PlanRepository plans;
@@ -49,10 +50,6 @@ public class TenantService {
                                TenantConfig.Branding branding, TenantConfig.Settings settings, TenantLimits limitOverrides) {
     }
 
-    /** Fired after any tenant change; listeners invalidate caches and broadcast to other nodes. */
-    public record TenantChangedEvent(String slug) {
-    }
-
     // ------------------------------------------------------------------ queries
 
     @Transactional(readOnly = true)
@@ -65,18 +62,12 @@ public class TenantService {
                 .toList();
     }
 
+    /** The tenant with its feature overrides loaded, or 404 (deleted tenants do not exist). */
     @Transactional(readOnly = true)
     public Tenant get(String slug) {
-        Tenant tenant = tenants.findBySlugWithFeatures(slug)
+        return tenants.findBySlugWithFeatures(slug)
                 .filter(t -> t.getStatus() != Tenant.Status.DELETED)
                 .orElseThrow(() -> DomainException.notFound("Tenant '" + slug + "'"));
-        tenant.getFeatureOverrides().size();
-        return tenant;
-    }
-
-    @Transactional(readOnly = true)
-    public Optional<Plan> planOf(Tenant tenant) {
-        return plans.findByCode(tenant.getPlanCode());
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -99,8 +90,8 @@ public class TenantService {
         Tenant tenant = new Tenant();
         tenant.setSlug(slug);
         tenant.setName(input.name().trim());
-        tenant.setContactEmail(input.contactEmail());
-        tenant.setDomain(input.domain());
+        tenant.setContactEmail(blankToNull(input.contactEmail()));
+        tenant.setDomain(blankToNull(input.domain()));
         tenant.setPlanCode(plan.getCode());
         if (input.trialDays() != null && input.trialDays() > 0) {
             tenant.setStatus(Tenant.Status.TRIAL);
@@ -108,10 +99,9 @@ public class TenantService {
         } else {
             tenant.setStatus(Tenant.Status.ACTIVE);
         }
-        tenant.setBrandingJson(Json.write(new TenantConfig.Branding(input.name().trim(), null,
-                TenantConfig.Branding.DEFAULT.primaryColor(), TenantConfig.Branding.DEFAULT.accentColor())));
-        tenant.setSettingsJson(Json.write(TenantConfig.Settings.DEFAULT));
-        tenant.setAuthJson(Json.write(TenantConfig.Auth.DEFAULT));
+        tenant.setBranding(TenantConfig.Branding.named(input.name().trim()));
+        tenant.setSettings(TenantConfig.Settings.DEFAULT);
+        tenant.setAuth(TenantConfig.Auth.DEFAULT);
         tenants.save(tenant);
         changed(slug);
         log.info("Created tenant {} on plan {}", slug, plan.getCode());
@@ -121,46 +111,58 @@ public class TenantService {
     @Transactional
     public Tenant update(String slug, TenantUpdate update) {
         Tenant tenant = get(slug);
-        if (update.name() != null && !update.name().isBlank()) tenant.setName(update.name().trim());
-        if (update.contactEmail() != null) tenant.setContactEmail(blankToNull(update.contactEmail()));
-        if (update.domain() != null) tenant.setDomain(blankToNull(update.domain()));
+        if (update.name() != null && !update.name().isBlank()) {
+            tenant.setName(update.name().trim());
+        }
+        if (update.contactEmail() != null) {
+            tenant.setContactEmail(blankToNull(update.contactEmail()));
+        }
+        if (update.domain() != null) {
+            tenant.setDomain(blankToNull(update.domain()));
+        }
         if (update.planCode() != null && !update.planCode().equals(tenant.getPlanCode())) {
             tenant.setPlanCode(activePlan(update.planCode()).getCode());
         }
-        if (update.branding() != null) tenant.setBrandingJson(Json.write(update.branding()));
+        if (update.branding() != null) {
+            tenant.setBranding(update.branding());
+        }
         if (update.settings() != null) {
             validateSettings(update.settings());
-            tenant.setSettingsJson(Json.write(update.settings()));
+            tenant.setSettings(update.settings());
         }
-        if (update.limitOverrides() != null) tenant.setLimitsJson(Json.write(update.limitOverrides()));
-        tenants.save(tenant);
+        if (update.limitOverrides() != null) {
+            tenant.setLimitOverrides(update.limitOverrides());
+        }
         changed(slug);
         return tenant;
     }
 
     @Transactional
     public Tenant setStatus(String slug, Tenant.Status status) {
+        if (status == Tenant.Status.DELETED) {
+            throw DomainException.badRequest("Use delete to remove a tenant");
+        }
         Tenant tenant = get(slug);
         tenant.setStatus(status);
         tenant.setSuspendedAt(status == Tenant.Status.SUSPENDED ? Instant.now() : null);
         if (status == Tenant.Status.ACTIVE) {
             tenant.setTrialEndsAt(null);
         }
-        tenants.save(tenant);
         changed(slug);
         return tenant;
     }
 
+    /** Soft delete: the row stays for audit, its connector overrides go. */
     @Transactional
     public void delete(String slug) {
         Tenant tenant = get(slug);
         tenant.setStatus(Tenant.Status.DELETED);
         tenant.setDeletedAt(Instant.now());
-        tenants.save(tenant);
         connectorConfigs.deleteScope(ConfigScope.tenant(slug));
         changed(slug);
     }
 
+    /** Replace all feature overrides; a null value removes the override (inherit the plan). */
     @Transactional
     public Tenant setFeatureOverrides(String slug, Map<String, Boolean> overrides) {
         Tenant tenant = get(slug);
@@ -181,7 +183,6 @@ public class TenantService {
             override.setUpdatedAt(Instant.now());
             tenant.getFeatureOverrides().add(override);
         });
-        tenants.save(tenant);
         changed(slug);
         return tenant;
     }
@@ -189,35 +190,27 @@ public class TenantService {
     /** Auth config with the JWT secret masked. */
     @Transactional(readOnly = true)
     public TenantConfig.Auth getAuth(String slug) {
-        TenantConfig.Auth auth = directory.auth(get(slug), false);
-        TenantConfig.External e = auth.external();
-        TenantConfig.External masked = new TenantConfig.External(e.typeOrNone(), e.firebaseProjectId(), e.jwtIssuer(),
-                e.jwtAudience(), e.jwksUrl(), e.jwtSecret() != null ? ConnectorConfigService.MASK : null,
-                e.userIdClaim(), e.nameClaim(), e.emailClaim());
-        return new TenantConfig.Auth(auth.devLoginEnabled(), auth.tokenTtlMinutes(), masked);
+        return masked(get(slug).storedAuth());
     }
 
     @Transactional
     public TenantConfig.Auth setAuth(String slug, TenantConfig.Auth input) {
         Tenant tenant = get(slug);
-        TenantConfig.Auth current = directory.auth(tenant, false);
+        TenantConfig.Auth current = tenant.storedAuth();
         TenantConfig.External in = input.external() != null ? input.external() : TenantConfig.External.NONE;
-        String type = in.typeOrNone();
-        if (!List.of("none", "firebase", "jwt").contains(type)) {
-            throw DomainException.badRequest("external.type must be none, firebase or jwt");
-        }
-        if (!type.equals("none") && !directory.toSnapshot(tenant).has(Feature.EXTERNAL_AUTH)) {
+        ExternalAuthType type = in.typeOrNone();
+        if (type != ExternalAuthType.NONE && !snapshot(tenant).has(Feature.EXTERNAL_AUTH)) {
             throw DomainException.featureDisabled(Feature.EXTERNAL_AUTH.getId());
         }
-        if (type.equals("firebase") && blank(in.firebaseProjectId())) {
+        if (type == ExternalAuthType.FIREBASE && blank(in.firebaseProjectId())) {
             throw DomainException.badRequest("firebaseProjectId is required for Firebase auth");
         }
         String secret = in.jwtSecret();
         if (ConnectorConfigService.MASK.equals(secret)) {
             secret = current.external().jwtSecret();
         } else if (!blank(secret)) {
-            if (secret.length() < 32) {
-                throw DomainException.badRequest("jwtSecret must be at least 32 characters (HS256)");
+            if (secret.length() < MIN_HS256_SECRET_LENGTH) {
+                throw DomainException.badRequest("jwtSecret must be at least " + MIN_HS256_SECRET_LENGTH + " characters (HS256)");
             }
             secret = cipher.encrypt(secret);
         } else {
@@ -226,35 +219,38 @@ public class TenantService {
         if (!blank(in.jwksUrl())) {
             urlPolicy.check(in.jwksUrl());
         }
-        if (type.equals("jwt") && secret == null && blank(in.jwksUrl())) {
+        if (type == ExternalAuthType.JWT && secret == null && blank(in.jwksUrl())) {
             throw DomainException.badRequest("JWT auth needs either jwksUrl (RS256/ES256) or jwtSecret (HS256)");
         }
         Integer ttl = input.tokenTtlMinutes();
-        if (ttl != null && (ttl < 5 || ttl > 60 * 24 * 30)) {
-            throw DomainException.badRequest("tokenTtlMinutes must be between 5 and 43200");
+        if (ttl != null && (ttl < MIN_TOKEN_TTL_MINUTES || ttl > MAX_TOKEN_TTL_MINUTES)) {
+            throw DomainException.badRequest("tokenTtlMinutes must be between " + MIN_TOKEN_TTL_MINUTES + " and "
+                    + MAX_TOKEN_TTL_MINUTES);
         }
         TenantConfig.External stored = new TenantConfig.External(type, blankToNull(in.firebaseProjectId()),
                 blankToNull(in.jwtIssuer()), blankToNull(in.jwtAudience()), blankToNull(in.jwksUrl()), secret,
                 defaultIfBlank(in.userIdClaim(), "sub"), defaultIfBlank(in.nameClaim(), "name"),
                 defaultIfBlank(in.emailClaim(), "email"));
-        tenant.setAuthJson(Json.write(new TenantConfig.Auth(
+        TenantConfig.Auth updated = new TenantConfig.Auth(
                 input.devLoginEnabled() != null ? input.devLoginEnabled() : current.devLoginEnabled(),
-                ttl != null ? ttl : current.tokenTtlMinutes(), stored)));
-        tenants.save(tenant);
+                ttl != null ? ttl : current.tokenTtlMinutes(), stored);
+        tenant.setAuth(updated);
         changed(slug);
-        return getAuth(slug);
+        return masked(updated);
     }
 
+    /** Fresh snapshot of a loaded tenant (bypasses the directory cache). */
+    @Transactional(readOnly = true)
     public TenantSnapshot snapshot(Tenant tenant) {
-        return directory.toSnapshot(tenant);
+        return directory.snapshot(tenant, plans.findByCode(tenant.getPlanCode()).orElse(null));
     }
 
-    public String featureSource(Feature feature, Tenant tenant) {
-        return TenantDirectory.sourceOf(feature, plans.findByCode(tenant.getPlanCode()).orElse(null), tenant);
+    public FeatureSource featureSource(Feature feature, Tenant tenant) {
+        return TenantDirectory.sourceOf(feature, tenant);
     }
 
     /** Trials that ran out are moved to the default plan rather than cut off. */
-    @Scheduled(fixedDelay = 15 * 60 * 1000, initialDelay = 60 * 1000)
+    @Scheduled(fixedDelayString = "PT15M", initialDelayString = "PT1M")
     @Transactional
     public void expireTrials() {
         Plan fallback = plans.findFirstByDefaultPlanTrue().orElse(null);
@@ -264,7 +260,6 @@ public class TenantService {
             if (fallback != null) {
                 tenant.setPlanCode(fallback.getCode());
             }
-            tenants.save(tenant);
             changed(tenant.getSlug());
             log.info("Trial expired for tenant {}; moved to plan {}", tenant.getSlug(), tenant.getPlanCode());
         }
@@ -273,8 +268,12 @@ public class TenantService {
     // ------------------------------------------------------------------ helpers
 
     private void changed(String slug) {
-        directory.invalidate(slug);
         events.publishEvent(new TenantChangedEvent(slug));
+    }
+
+    private static TenantConfig.Auth masked(TenantConfig.Auth auth) {
+        TenantConfig.External e = auth.external();
+        return auth.withExternal(e.withJwtSecret(e.jwtSecret() != null ? ConnectorConfigService.MASK : null));
     }
 
     private Plan activePlan(String code) {
@@ -299,14 +298,14 @@ public class TenantService {
     }
 
     private static void validateSettings(TenantConfig.Settings s) {
-        if (s.maxMessageLength() != null && (s.maxMessageLength() < 1 || s.maxMessageLength() > 65_536)) {
-            throw DomainException.badRequest("maxMessageLength must be between 1 and 65536");
+        if (s.maxMessageLength() != null && (s.maxMessageLength() < 1 || s.maxMessageLength() > MAX_MESSAGE_LENGTH)) {
+            throw DomainException.badRequest("maxMessageLength must be between 1 and " + MAX_MESSAGE_LENGTH);
         }
         if (s.editWindowMinutes() != null && s.editWindowMinutes() < 0) {
             throw DomainException.badRequest("editWindowMinutes cannot be negative");
         }
-        if (s.maxFileSizeMb() != null && (s.maxFileSizeMb() < 1 || s.maxFileSizeMb() > 2048)) {
-            throw DomainException.badRequest("maxFileSizeMb must be between 1 and 2048");
+        if (s.maxFileSizeMb() != null && (s.maxFileSizeMb() < 1 || s.maxFileSizeMb() > MAX_FILE_SIZE_MB)) {
+            throw DomainException.badRequest("maxFileSizeMb must be between 1 and " + MAX_FILE_SIZE_MB);
         }
     }
 

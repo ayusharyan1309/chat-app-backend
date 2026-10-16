@@ -1,6 +1,9 @@
 package com.ayush.chat.tenant;
 
+import com.ayush.chat.core.persistence.CsvSetConverter;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
+import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -13,10 +16,8 @@ import lombok.Setter;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 @Getter
 @Setter
@@ -44,26 +45,14 @@ public class Plan {
 
     private String currency;
 
-    @Column(name = "max_users")
-    private Long maxUsers;
+    /** Null fields mean unlimited. */
+    @Embedded
+    private TenantLimits limits;
 
-    @Column(name = "max_messages_per_day")
-    private Long maxMessagesPerDay;
-
-    @Column(name = "max_connections")
-    private Long maxConnections;
-
-    @Column(name = "max_storage_mb")
-    private Long maxStorageMb;
-
-    @Column(name = "max_group_size")
-    private Integer maxGroupSize;
-
-    @Column(name = "messages_per_second")
-    private Integer messagesPerSecond;
-
-    /** Comma-separated feature ids. */
-    private String features;
+    /** Toggleable feature ids included in the plan (core features are always on). */
+    @Convert(converter = CsvSetConverter.class)
+    @Column(name = "features")
+    private Set<String> featureIds = new LinkedHashSet<>();
 
     @Column(name = "is_default")
     private boolean defaultPlan;
@@ -91,19 +80,7 @@ public class Plan {
         updatedAt = Instant.now();
     }
 
-    public Set<String> featureIds() {
-        if (features == null || features.isBlank()) {
-            return new LinkedHashSet<>();
-        }
-        return Arrays.stream(features.split(",")).map(String::trim).filter(s -> !s.isEmpty())
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-    }
-
-    public void setFeatureIds(Set<String> ids) {
-        this.features = String.join(",", ids);
-    }
-
-    public TenantLimits limits() {
-        return new TenantLimits(maxUsers, maxMessagesPerDay, maxConnections, maxStorageMb, maxGroupSize, messagesPerSecond);
+    public TenantLimits limitsOrNone() {
+        return limits != null ? limits : TenantLimits.NONE;
     }
 }

@@ -1,5 +1,6 @@
 package com.ayush.chat.auth;
 
+import com.ayush.chat.core.config.PlatformProperties;
 import com.ayush.chat.core.error.DomainException;
 import com.ayush.chat.tenant.TenantConfig;
 import io.jsonwebtoken.Claims;
@@ -21,7 +22,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.Key;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
@@ -37,8 +37,16 @@ public class ExternalTokenVerifier {
 
     static final String FIREBASE_JWKS = "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
 
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+    private static final long CLOCK_SKEW_SECONDS = 60;
+
+    private final PlatformProperties.Jwks settings;
+    private final HttpClient http;
     private final Map<String, CachedJwks> jwksCache = new ConcurrentHashMap<>();
+
+    public ExternalTokenVerifier(PlatformProperties properties) {
+        this.settings = properties.getJwks();
+        this.http = HttpClient.newBuilder().connectTimeout(settings.getFetchTimeout()).build();
+    }
 
     public record Identity(String userId, String displayName, String email) {
     }
@@ -47,16 +55,15 @@ public class ExternalTokenVerifier {
     }
 
     public Identity verify(TenantConfig.External config, String token) {
-        String type = config.typeOrNone();
-        JwtParserBuilder parser = Jwts.parser().clockSkewSeconds(60);
-        switch (type) {
-            case "firebase" -> {
+        JwtParserBuilder parser = Jwts.parser().clockSkewSeconds(CLOCK_SKEW_SECONDS);
+        switch (config.typeOrNone()) {
+            case FIREBASE -> {
                 String project = config.firebaseProjectId();
                 parser.keyLocator(locator(FIREBASE_JWKS))
                         .requireIssuer("https://securetoken.google.com/" + project)
                         .requireAudience(project);
             }
-            case "jwt" -> {
+            case JWT -> {
                 if (config.jwksUrl() != null && !config.jwksUrl().isBlank()) {
                     parser.keyLocator(locator(config.jwksUrl()));
                 } else if (config.jwtSecret() != null) {
@@ -71,7 +78,7 @@ public class ExternalTokenVerifier {
                     parser.requireAudience(config.jwtAudience());
                 }
             }
-            default -> throw DomainException.badRequest("External authentication is not enabled for this tenant");
+            case NONE -> throw DomainException.badRequest("External authentication is not enabled for this tenant");
         }
         Claims claims;
         try {
@@ -111,12 +118,13 @@ public class ExternalTokenVerifier {
 
     private Map<String, Key> keys(String url, boolean refresh) {
         CachedJwks cached = jwksCache.get(url);
-        boolean stale = cached == null || cached.fetchedAt().isBefore(Instant.now().minus(Duration.ofHours(1)));
-        boolean refreshAllowed = cached == null || cached.fetchedAt().isBefore(Instant.now().minusSeconds(60));
+        boolean stale = cached == null || cached.fetchedAt().isBefore(Instant.now().minus(settings.getCacheTtl()));
+        // Unknown key ids trigger a refresh (key rotation), but at most once per interval per URL.
+        boolean refreshAllowed = cached == null || cached.fetchedAt().isBefore(Instant.now().minus(settings.getMinRefreshInterval()));
         if (stale || (refresh && refreshAllowed)) {
             try {
                 HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(url))
-                        .timeout(Duration.ofSeconds(5)).GET().build(), HttpResponse.BodyHandlers.ofString());
+                        .timeout(settings.getFetchTimeout()).GET().build(), HttpResponse.BodyHandlers.ofString());
                 if (response.statusCode() != 200) {
                     throw new IllegalStateException("HTTP " + response.statusCode());
                 }

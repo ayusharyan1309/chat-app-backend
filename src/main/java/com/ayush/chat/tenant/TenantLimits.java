@@ -1,9 +1,12 @@
 package com.ayush.chat.tenant;
 
+import jakarta.persistence.Embeddable;
+
 /**
  * Quantitative limits. A null value means "unlimited" on a plan, or "inherit the plan" when used
  * as a tenant override.
  */
+@Embeddable
 public record TenantLimits(Long maxUsers, Long maxMessagesPerDay, Long maxConnections, Long maxStorageMb,
                            Integer maxGroupSize, Integer messagesPerSecond) {
 

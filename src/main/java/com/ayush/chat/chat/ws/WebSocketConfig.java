@@ -1,7 +1,8 @@
 package com.ayush.chat.chat.ws;
 
-import lombok.RequiredArgsConstructor;
+import com.ayush.chat.core.config.PlatformProperties;
 import jakarta.annotation.PreDestroy;
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
@@ -25,6 +26,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private final StompAuthInterceptor authInterceptor;
     private final SessionRegistry sessionRegistry;
+    private final PlatformProperties properties;
 
     /** Private to the broker so it never competes with application @Scheduled jobs. */
     private final ThreadPoolTaskScheduler heartbeatScheduler = heartbeatScheduler();
@@ -45,8 +47,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
+        long heartbeat = properties.getRealtime().getHeartbeat().toMillis();
         registry.enableSimpleBroker("/queue")
-                .setHeartbeatValue(new long[]{20_000, 20_000})
+                .setHeartbeatValue(new long[]{heartbeat, heartbeat})
                 .setTaskScheduler(heartbeatScheduler);
         registry.setApplicationDestinationPrefixes("/app");
         registry.setUserDestinationPrefix("/user");
@@ -65,20 +68,23 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
+        int threads = properties.getRealtime().getInboundThreads();
         registration.interceptors(authInterceptor);
-        registration.taskExecutor().corePoolSize(32).maxPoolSize(32);
+        registration.taskExecutor().corePoolSize(threads).maxPoolSize(threads);
     }
 
     @Override
     public void configureClientOutboundChannel(ChannelRegistration registration) {
-        registration.taskExecutor().corePoolSize(16).maxPoolSize(16);
+        int threads = properties.getRealtime().getOutboundThreads();
+        registration.taskExecutor().corePoolSize(threads).maxPoolSize(threads);
     }
 
     @Override
     public void configureWebSocketTransport(WebSocketTransportRegistration registration) {
-        registration.setMessageSizeLimit(128 * 1024)
-                .setSendBufferSizeLimit(1024 * 1024)
-                .setSendTimeLimit(20_000)
+        PlatformProperties.Realtime realtime = properties.getRealtime();
+        registration.setMessageSizeLimit((int) realtime.getMaxFrameSize().toBytes())
+                .setSendBufferSizeLimit((int) realtime.getSendBufferSize().toBytes())
+                .setSendTimeLimit((int) realtime.getSendTimeLimit().toMillis())
                 .addDecoratorFactory(handler -> new WebSocketHandlerDecorator(handler) {
                     @Override
                     public void afterConnectionEstablished(WebSocketSession session) throws Exception {

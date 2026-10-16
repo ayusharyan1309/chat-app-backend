@@ -1,12 +1,16 @@
 package com.ayush.chat.chat.ws;
 
 import com.ayush.chat.auth.Principals.ChatUserPrincipal;
-import com.ayush.chat.chat.ChatService;
-import com.ayush.chat.chat.PresenceService;
-import com.ayush.chat.chat.RealtimeGateway;
+import com.ayush.chat.chat.Views.MessageView;
+import com.ayush.chat.chat.application.MessageService;
+import com.ayush.chat.chat.application.ReceiptService;
 import com.ayush.chat.chat.event.ChatEvent;
+import com.ayush.chat.chat.realtime.PresenceService;
+import com.ayush.chat.chat.realtime.RealtimeGateway;
 import com.ayush.chat.core.error.DomainException;
+import com.ayush.chat.core.error.ErrorCode;
 import com.ayush.chat.store.model.ChatMessage;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.handler.annotation.Header;
@@ -15,7 +19,6 @@ import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Controller;
 
 import java.security.Principal;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -28,7 +31,8 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class ChatSocketController {
 
-    private final ChatService chat;
+    private final MessageService messages;
+    private final ReceiptService receipts;
     private final PresenceService presence;
     private final RealtimeGateway gateway;
 
@@ -46,69 +50,63 @@ public class ChatSocketController {
     public record WatchFrame(List<String> userIds) {
     }
 
+    /** Sent to the sender's own sessions once a message is durable. */
+    public record MessageAck(String clientMsgId, MessageView message, boolean duplicate) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record ErrorPayload(String code, String message, String clientMsgId) {
+    }
+
     @MessageMapping("/messages.send")
     public void send(@Payload SendFrame frame, Principal principal) {
         ChatUserPrincipal me = (ChatUserPrincipal) principal;
-        try {
-            ChatService.SendResult result = chat.send(me.tenant(), me.userId(), frame.conversationId(),
-                    new ChatService.SendInput(frame.clientMsgId(), frame.type(), frame.content(), frame.attachment(),
+        handle(me, frame.conversationId(), frame.clientMsgId(), () -> {
+            MessageService.SendResult result = messages.send(me.tenant(), me.userId(), frame.conversationId(),
+                    new MessageService.SendInput(frame.clientMsgId(), frame.type(), frame.content(), frame.attachment(),
                             frame.replyToId(), frame.forwarded(), frame.metadata()));
-            Map<String, Object> ack = new LinkedHashMap<>();
-            ack.put("clientMsgId", result.message().clientMsgId());
-            ack.put("message", result.message());
-            ack.put("duplicate", result.duplicate());
-            gateway.deliverLocally(me.tenant(), me.userId(), ChatEvent.of(ChatEvent.MESSAGE_ACK, frame.conversationId(), ack));
-        } catch (Exception e) {
-            error(me, frame.conversationId(), e, frame.clientMsgId());
-        }
+            gateway.deliverLocally(me.tenant(), me.userId(), ChatEvent.of(ChatEvent.MESSAGE_ACK, frame.conversationId(),
+                    new MessageAck(result.message().clientMsgId(), result.message(), result.duplicate())));
+        });
     }
 
     @MessageMapping("/typing")
     public void typing(@Payload TypingFrame frame, Principal principal) {
         ChatUserPrincipal me = (ChatUserPrincipal) principal;
-        try {
-            chat.typing(me.tenant(), me.userId(), frame.conversationId(), frame.typing());
-        } catch (Exception e) {
-            error(me, frame.conversationId(), e, null);
-        }
+        handle(me, frame.conversationId(), null,
+                () -> receipts.typing(me.tenant(), me.userId(), frame.conversationId(), frame.typing()));
     }
 
     @MessageMapping("/receipts")
     public void receipt(@Payload ReceiptFrame frame, Principal principal) {
         ChatUserPrincipal me = (ChatUserPrincipal) principal;
-        try {
+        handle(me, frame.conversationId(), null, () -> {
             if ("read".equalsIgnoreCase(frame.kind())) {
-                chat.markRead(me.tenant(), me.userId(), frame.conversationId(), frame.seq());
+                receipts.markRead(me.tenant(), me.userId(), frame.conversationId(), frame.seq());
             } else {
-                chat.markDelivered(me.tenant(), me.userId(), frame.conversationId(), frame.seq());
+                receipts.markDelivered(me.tenant(), me.userId(), frame.conversationId(), frame.seq());
             }
-        } catch (Exception e) {
-            error(me, frame.conversationId(), e, null);
-        }
+        });
     }
 
     @MessageMapping("/presence.watch")
     public void watch(@Payload WatchFrame frame, Principal principal, @Header("simpSessionId") String sessionId) {
         ChatUserPrincipal me = (ChatUserPrincipal) principal;
+        handle(me, null, null, () -> presence.watch(sessionId, me, frame.userIds() == null ? List.of() : frame.userIds()));
+    }
+
+    private void handle(ChatUserPrincipal me, String conversationId, String clientMsgId, Runnable operation) {
         try {
-            presence.watch(sessionId, me, frame.userIds() == null ? List.of() : frame.userIds());
-        } catch (Exception e) {
-            error(me, null, e, null);
+            operation.run();
+        } catch (DomainException e) {
+            error(me, conversationId, new ErrorPayload(e.getCode(), e.getMessage(), clientMsgId));
+        } catch (RuntimeException e) {
+            log.error("Socket operation failed for {}", me.getName(), e);
+            error(me, conversationId, new ErrorPayload(ErrorCode.INTERNAL.code(), "Unexpected server error", clientMsgId));
         }
     }
 
-    private void error(ChatUserPrincipal me, String conversationId, Exception e, String clientMsgId) {
-        String code = e instanceof DomainException api ? api.getCode() : "internal_error";
-        String message = e instanceof DomainException ? e.getMessage() : "Unexpected server error";
-        if (!(e instanceof DomainException)) {
-            log.error("Socket operation failed for {}", me.getName(), e);
-        }
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("code", code);
-        data.put("message", message);
-        if (clientMsgId != null) {
-            data.put("clientMsgId", clientMsgId);
-        }
-        gateway.deliverLocally(me.tenant(), me.userId(), ChatEvent.of(ChatEvent.ERROR, conversationId, data));
+    private void error(ChatUserPrincipal me, String conversationId, ErrorPayload payload) {
+        gateway.deliverLocally(me.tenant(), me.userId(), ChatEvent.of(ChatEvent.ERROR, conversationId, payload));
     }
 }

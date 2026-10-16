@@ -2,6 +2,7 @@ package com.ayush.chat.tenant;
 
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -30,7 +31,14 @@ import java.util.List;
 @Table(name = "platform_tenants")
 public class Tenant {
 
-    public enum Status { ACTIVE, TRIAL, SUSPENDED, DELETED }
+    public enum Status {
+        ACTIVE, TRIAL, SUSPENDED, DELETED;
+
+        /** Whether users of a tenant in this state may connect and send. */
+        public boolean isUsable() {
+            return this == ACTIVE || this == TRIAL;
+        }
+    }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -57,17 +65,23 @@ public class Tenant {
     @Column(name = "trial_ends_at")
     private Instant trialEndsAt;
 
+    /** Per-tenant overrides of the plan's limits (null fields inherit the plan). */
+    @Convert(converter = TenantConfig.LimitsConverter.class)
     @Column(name = "limits_json")
-    private String limitsJson;
+    private TenantLimits limitOverrides;
 
+    @Convert(converter = TenantConfig.BrandingConverter.class)
     @Column(name = "branding_json")
-    private String brandingJson;
+    private TenantConfig.Branding branding;
 
+    @Convert(converter = TenantConfig.SettingsConverter.class)
     @Column(name = "settings_json")
-    private String settingsJson;
+    private TenantConfig.Settings settings;
 
+    /** As stored: the external JWT secret is encrypted. */
+    @Convert(converter = TenantConfig.AuthConverter.class)
     @Column(name = "auth_json")
-    private String authJson;
+    private TenantConfig.Auth auth;
 
     @Column(name = "created_at")
     private Instant createdAt;
@@ -96,6 +110,23 @@ public class Tenant {
     }
 
     public boolean isUsable() {
-        return status == Status.ACTIVE || status == Status.TRIAL;
+        return status.isUsable();
+    }
+
+    public TenantLimits limitOverridesOrNone() {
+        return limitOverrides != null ? limitOverrides : TenantLimits.NONE;
+    }
+
+    public TenantConfig.Branding brandingOrDefault() {
+        return branding != null ? branding : TenantConfig.Branding.DEFAULT;
+    }
+
+    public TenantConfig.Settings effectiveSettings() {
+        return (settings != null ? settings : TenantConfig.Settings.DEFAULT).withDefaults();
+    }
+
+    /** Stored auth config with defaults applied; the JWT secret is still encrypted. */
+    public TenantConfig.Auth storedAuth() {
+        return (auth != null ? auth : TenantConfig.Auth.DEFAULT).withDefaults();
     }
 }

@@ -18,8 +18,6 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
@@ -35,11 +33,6 @@ public class SecurityConfig {
 
     private static final String[] ADMIN_ROLES = {"OWNER", "ADMIN", "VIEWER"};
     private static final String[] ADMIN_WRITE_ROLES = {"OWNER", "ADMIN"};
-
-    @Bean
-    public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder(10);
-    }
 
     /** Disables Spring Boot's generated in-memory user; all authentication is token based. */
     @Bean

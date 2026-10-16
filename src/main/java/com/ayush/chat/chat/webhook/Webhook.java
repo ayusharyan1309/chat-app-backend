@@ -1,7 +1,9 @@
 package com.ayush.chat.chat.webhook;
 
 import com.ayush.chat.tenant.Tenant;
+import com.ayush.chat.core.persistence.CsvSetConverter;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
@@ -16,10 +18,8 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.time.Instant;
-import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 @Getter
 @Setter
@@ -42,9 +42,9 @@ public class Webhook {
     @Column(nullable = false)
     private String secret;
 
-    /** Comma-separated event types. */
-    @Column(nullable = false)
-    private String events;
+    @Convert(converter = CsvSetConverter.class)
+    @Column(name = "events", nullable = false)
+    private Set<String> eventTypes = new LinkedHashSet<>();
 
     private String description;
 
@@ -65,10 +65,5 @@ public class Webhook {
     @PreUpdate
     void onUpdate() {
         updatedAt = Instant.now();
-    }
-
-    public Set<String> eventTypes() {
-        return Arrays.stream(events.split(",")).map(String::trim).filter(s -> !s.isEmpty())
-                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 }

@@ -1,15 +1,12 @@
 package com.ayush.chat.audit;
 
-import com.ayush.chat.auth.Principals;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
@@ -17,56 +14,50 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * Append-only record of administrative and server-API actions.
+ * Append-only record of administrative and server-API actions. Services record inside their own
+ * transaction, so an action that rolls back leaves no audit entry behind.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuditService {
 
+    private static final int MAX_DETAILS = 2000;
+    private static final int MAX_PAGE = 500;
+
     private final AuditRepository repository;
 
-    public interface AuditRepository extends JpaRepository<AuditEntry, Long> {
-        @Query("select a from AuditEntry a where (:tenant is null or a.tenant = :tenant) and (:before is null or a.id < :before)"
-                + " order by a.id desc")
-        List<AuditEntry> page(@Param("tenant") String tenant, @Param("before") Long before, PageRequest page);
-    }
-
-    public void record(String action, String targetType, String targetId, String tenant, String details) {
+    public void record(AuditAction action, String targetId, String tenant, String details) {
         AuditEntry entry = new AuditEntry();
         entry.setAt(Instant.now());
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        Object principal = auth == null ? null : auth.getPrincipal();
-        if (principal instanceof Principals.AdminPrincipal admin) {
-            entry.setActor(admin.email());
-            entry.setActorType("ADMIN");
-        } else if (principal instanceof Principals.TenantServerPrincipal server) {
-            entry.setActor("api-key:" + server.keyName());
-            entry.setActorType("API_KEY");
+        if (auth != null && auth.getPrincipal() instanceof AuditActor actor) {
+            entry.setActor(actor.auditName());
+            entry.setActorType(actor.auditType());
         } else {
             entry.setActor("system");
             entry.setActorType("SYSTEM");
         }
-        entry.setAction(action);
-        entry.setTargetType(targetType);
+        entry.setAction(action.id());
+        entry.setTargetType(action.targetType());
         entry.setTargetId(targetId);
         entry.setTenant(tenant);
-        entry.setDetails(details == null || details.length() <= 2000 ? details : details.substring(0, 1997) + "...");
+        entry.setDetails(details == null || details.length() <= MAX_DETAILS ? details
+                : details.substring(0, MAX_DETAILS - 3) + "...");
         if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attrs) {
             entry.setIp(attrs.getRequest().getRemoteAddr());
         }
-        try {
-            repository.save(entry);
-        } catch (Exception e) {
-            log.error("Failed to write audit entry {} {}", action, targetId, e);
-        }
+        repository.save(entry);
     }
 
-    public List<AuditEntry> list(String tenant, Long before, int limit) {
+    @Transactional(readOnly = true)
+    public List<AuditEntryView> list(String tenant, Long before, int limit) {
         return repository.page(tenant == null || tenant.isBlank() ? null : tenant, before,
-                PageRequest.of(0, Math.max(1, Math.min(limit, 500))));
+                        PageRequest.of(0, Math.max(1, Math.min(limit, MAX_PAGE))))
+                .stream().map(AuditEntryView::of).toList();
     }
 
+    /** Name of the authenticated caller, for "created by" columns. */
     public static String currentActor() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         return auth == null ? "system" : auth.getName();

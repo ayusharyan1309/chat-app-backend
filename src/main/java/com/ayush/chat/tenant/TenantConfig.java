@@ -1,9 +1,11 @@
 package com.ayush.chat.tenant;
 
+import com.ayush.chat.core.persistence.JsonAttributeConverter;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import jakarta.persistence.Converter;
 
 /**
- * JSON-backed value objects stored on the tenant row.
+ * Value objects stored as JSON columns on the tenant row, with their JPA converters.
  */
 public final class TenantConfig {
 
@@ -13,6 +15,10 @@ public final class TenantConfig {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Branding(String displayName, String logoUrl, String primaryColor, String accentColor) {
         public static final Branding DEFAULT = new Branding(null, null, "#0B6E4F", "#F2A541");
+
+        public static Branding named(String displayName) {
+            return new Branding(displayName, null, DEFAULT.primaryColor, DEFAULT.accentColor);
+        }
     }
 
     public record Settings(Integer maxMessageLength, Integer editWindowMinutes, Integer maxFileSizeMb,
@@ -44,16 +50,55 @@ public final class TenantConfig {
                     tokenTtlMinutes != null ? tokenTtlMinutes : DEFAULT.tokenTtlMinutes,
                     external != null ? external : External.NONE);
         }
+
+        public Auth withExternal(External replacement) {
+            return new Auth(devLoginEnabled, tokenTtlMinutes, replacement);
+        }
     }
 
+    /** {@code jwtSecret} is encrypted at rest; {@link TenantDirectory} decrypts it into snapshots. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record External(String type, String firebaseProjectId, String jwtIssuer, String jwtAudience,
+    public record External(ExternalAuthType type, String firebaseProjectId, String jwtIssuer, String jwtAudience,
                            String jwksUrl, String jwtSecret, String userIdClaim, String nameClaim, String emailClaim) {
 
-        public static final External NONE = new External("none", null, null, null, null, null, "sub", "name", "email");
+        public static final External NONE = new External(ExternalAuthType.NONE, null, null, null, null, null,
+                "sub", "name", "email");
 
-        public String typeOrNone() {
-            return type == null || type.isBlank() ? "none" : type;
+        public ExternalAuthType typeOrNone() {
+            return type == null ? ExternalAuthType.NONE : type;
+        }
+
+        public External withJwtSecret(String secret) {
+            return new External(type, firebaseProjectId, jwtIssuer, jwtAudience, jwksUrl, secret, userIdClaim, nameClaim,
+                    emailClaim);
+        }
+    }
+
+    @Converter
+    public static class BrandingConverter extends JsonAttributeConverter<Branding> {
+        public BrandingConverter() {
+            super(Branding.class);
+        }
+    }
+
+    @Converter
+    public static class SettingsConverter extends JsonAttributeConverter<Settings> {
+        public SettingsConverter() {
+            super(Settings.class);
+        }
+    }
+
+    @Converter
+    public static class AuthConverter extends JsonAttributeConverter<Auth> {
+        public AuthConverter() {
+            super(Auth.class);
+        }
+    }
+
+    @Converter
+    public static class LimitsConverter extends JsonAttributeConverter<TenantLimits> {
+        public LimitsConverter() {
+            super(TenantLimits.class);
         }
     }
 }

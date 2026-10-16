@@ -1,6 +1,7 @@
 package com.ayush.chat.auth;
 
 import com.ayush.chat.core.config.PlatformProperties;
+import com.ayush.chat.core.crypto.KeyRing;
 import com.ayush.chat.core.error.DomainException;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
@@ -10,8 +11,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import javax.crypto.SecretKey;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
@@ -19,7 +18,8 @@ import java.util.UUID;
 
 /**
  * Issues and verifies platform JWTs (HS256). Admin and user tokens use different audiences so
- * one can never be replayed as the other.
+ * one can never be replayed as the other. TTL policy for user tokens lives in
+ * {@link UserTokenService}; this class only signs and parses.
  */
 @Slf4j
 @Service
@@ -30,28 +30,24 @@ public class JwtService {
     static final String AUD_USER = "user";
 
     private final SecretKey key;
-    private final PlatformProperties properties;
+    private final Duration adminTokenTtl;
 
     public record IssuedToken(String token, Instant expiresAt) {
     }
 
-    public JwtService(PlatformProperties properties) {
-        this.properties = properties;
+    public JwtService(PlatformProperties properties, KeyRing keyRing) {
+        this.adminTokenTtl = properties.getSecurity().getAdminTokenTtl();
         String secret = properties.getSecurity().getJwtSecret();
-        String material = secret != null && !secret.isBlank() ? secret
-                : "jwt:" + properties.getSecurity().effectiveMasterKey();
         if (secret == null || secret.isBlank()) {
             log.warn("platform.security.jwt-secret is not set — deriving it from the master key. Set PLATFORM_JWT_SECRET in production.");
-        }
-        try {
-            this.key = Keys.hmacShaKeyFor(MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
+            this.key = Keys.hmacShaKeyFor(keyRing.derive(KeyRing.Purpose.JWT));
+        } else {
+            this.key = Keys.hmacShaKeyFor(KeyRing.fromSecret(secret));
         }
     }
 
     public IssuedToken issueAdmin(AdminUser admin) {
-        Instant exp = Instant.now().plus(properties.getSecurity().getAdminTokenTtl());
+        Instant exp = Instant.now().plus(adminTokenTtl);
         String token = Jwts.builder()
                 .issuer(ISSUER).audience().add(AUD_ADMIN).and()
                 .subject(String.valueOf(admin.getId()))
@@ -63,9 +59,8 @@ public class JwtService {
         return new IssuedToken(token, exp);
     }
 
-    public IssuedToken issueUser(String tenant, String userId, Duration ttl) {
-        Duration effective = ttl != null ? ttl : properties.getSecurity().getUserTokenTtl();
-        Instant exp = Instant.now().plus(effective);
+    IssuedToken issueUser(String tenant, String userId, Duration ttl) {
+        Instant exp = Instant.now().plus(ttl);
         String token = Jwts.builder()
                 .issuer(ISSUER).audience().add(AUD_USER).and()
                 .subject(userId)
@@ -76,8 +71,8 @@ public class JwtService {
         return new IssuedToken(token, exp);
     }
 
-    /** Returns the matching principal, or throws 401. */
-    public Object verify(String token) {
+    /** Returns the principal the token was issued for, or throws 401. */
+    public Principals.TokenPrincipal verify(String token) {
         Claims claims;
         try {
             claims = Jwts.parser().verifyWith(key).requireIssuer(ISSUER).build().parseSignedClaims(token).getPayload();

@@ -1,7 +1,7 @@
 package com.ayush.chat.chat.ws;
 
 import com.ayush.chat.auth.Principals.ChatUserPrincipal;
-import com.ayush.chat.chat.PresenceService;
+import com.ayush.chat.chat.realtime.PresenceService;
 import com.ayush.chat.core.cluster.ClusterService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

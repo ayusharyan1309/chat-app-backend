@@ -1,10 +1,8 @@
 package com.ayush.chat.admin;
 
-import com.ayush.chat.audit.AuditService;
 import com.ayush.chat.auth.AdminAuthService;
 import com.ayush.chat.auth.AdminUser;
 import com.ayush.chat.auth.Principals.AdminPrincipal;
-import com.ayush.chat.core.error.DomainException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -27,7 +25,6 @@ import java.util.List;
 public class AdminAuthController {
 
     private final AdminAuthService admins;
-    private final AuditService audit;
 
     public record LoginRequest(String email, String password) {
     }
@@ -62,8 +59,7 @@ public class AdminAuthController {
     @PostMapping("/auth/change-password")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void changePassword(@AuthenticationPrincipal AdminPrincipal me, @RequestBody PasswordChange request) {
-        admins.changePassword(me.id(), request.currentPassword(), request.newPassword());
-        audit.record("admin.password_changed", "admin", me.email(), null, null);
+        admins.changePassword(me, request.currentPassword(), request.newPassword());
     }
 
     @GetMapping("/admins")
@@ -74,18 +70,12 @@ public class AdminAuthController {
     @PostMapping("/admins")
     @ResponseStatus(HttpStatus.CREATED)
     public AdminView create(@AuthenticationPrincipal AdminPrincipal me, @RequestBody CreateAdmin request) {
-        if (request.role() == AdminUser.Role.OWNER && me.role() != AdminUser.Role.OWNER) {
-            throw DomainException.forbidden("Only owners can create owners");
-        }
-        AdminUser created = admins.create(request.email(), request.name(), request.password(), request.role());
-        audit.record("admin.created", "admin", created.getEmail(), null, "role=" + created.getRole());
-        return AdminView.of(created);
+        return AdminView.of(admins.create(me, request.email(), request.name(), request.password(), request.role()));
     }
 
     @DeleteMapping("/admins/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@AuthenticationPrincipal AdminPrincipal me, @PathVariable Long id) {
-        admins.delete(id, me.id(), me.role());
-        audit.record("admin.deleted", "admin", String.valueOf(id), null, null);
+        admins.delete(me, id);
     }
 }

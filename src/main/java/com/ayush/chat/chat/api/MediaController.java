@@ -1,7 +1,7 @@
 package com.ayush.chat.chat.api;
 
 import com.ayush.chat.auth.Principals.ChatUserPrincipal;
-import com.ayush.chat.chat.MediaService;
+import com.ayush.chat.chat.media.MediaService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.CacheControl;
@@ -32,8 +32,10 @@ public class MediaController {
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
-    public MediaService.MediaView upload(@AuthenticationPrincipal ChatUserPrincipal me, @RequestPart("file") MultipartFile file) {
-        return media.upload(me.tenant(), file);
+    public MediaService.MediaView upload(@AuthenticationPrincipal ChatUserPrincipal me, @RequestPart(name = "file", required = false) MultipartFile file) {
+        MediaService.Upload upload = file == null ? null
+                : new MediaService.Upload(file.getOriginalFilename(), file.getContentType(), file.getSize(), file::getInputStream);
+        return media.upload(me.tenant(), upload);
     }
 
     /** Public, signature-protected download (works in {@code <img src>}). */
