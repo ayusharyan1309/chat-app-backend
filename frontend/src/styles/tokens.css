@@ -1,0 +1,175 @@
+/*
+ * Design tokens. Two hand-tuned themes (not an automatic inversion), switched with
+ * <html data-theme="light|dark">. Status colours are reserved for health/state and always ship
+ * with a label or icon. Cobalt is the single accent: selection, focus and primary actions.
+ */
+
+:root {
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Type scale (~1.125 minor second around a 14px body). */
+  --text-2xs: 0.6875rem; /* 11 */
+  --text-xs: 0.75rem; /* 12 */
+  --text-sm: 0.8125rem; /* 13 */
+  --text-md: 0.875rem; /* 14 */
+  --text-lg: 1rem; /* 16 */
+  --text-xl: 1.25rem; /* 20 */
+  --text-2xl: 1.625rem; /* 26 */
+
+  --leading-tight: 1.25;
+  --leading-snug: 1.4;
+  --leading-body: 1.55;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Radius follows hierarchy: controls < panels < dialogs. */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-pill: 999px;
+
+  --control-h: 34px;
+  --control-h-sm: 28px;
+  --sidebar-w: 236px;
+  --sidebar-w-collapsed: 60px;
+  --topbar-h: 52px;
+  --content-max: 1360px;
+
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+}
+
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --canvas: #f2f4f7;
+  --panel: #ffffff;
+  --panel-2: #f8f9fb;
+  --sunken: #eceff4;
+  --hover: #f1f3f7;
+  --line: #dde2ea;
+  --line-soft: #e8ebf0;
+  --line-strong: #c3cad6;
+
+  --ink: #18202f;
+  --ink-2: #4a5468;
+  --ink-3: #6f798d;
+  --ink-disabled: #a2aab8;
+
+  --accent: #2f4bdb;
+  --accent-hover: #263fbf;
+  --accent-soft: #e9edfd;
+  --accent-soft-2: #d7defb;
+  --accent-ink: #2a43c4;
+  --on-accent: #ffffff;
+
+  --ok: #13804b;
+  --ok-soft: #e1f3e9;
+  --ok-ink: #0d6a3d;
+  --warn: #b26b00;
+  --warn-soft: #fbf0db;
+  --warn-ink: #855000;
+  --danger: #c7362f;
+  --danger-hover: #ad2b25;
+  --danger-soft: #fbe7e5;
+  --danger-ink: #a62a24;
+  --info: #2a6fb5;
+  --info-soft: #e5f0fb;
+  --info-ink: #1f5a96;
+
+  --shadow-sm: 0 1px 2px rgba(20, 28, 45, 0.06);
+  --shadow-md: 0 4px 14px -4px rgba(20, 28, 45, 0.14), 0 1px 3px rgba(20, 28, 45, 0.06);
+  --shadow-lg: 0 24px 60px -16px rgba(20, 28, 45, 0.32), 0 2px 8px rgba(20, 28, 45, 0.08);
+  --overlay: rgba(16, 22, 36, 0.44);
+  --focus: 0 0 0 2px var(--panel), 0 0 0 4px rgba(47, 75, 219, 0.55);
+
+  /* Charts (validated categorical slots 1-2 of the reference palette). */
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-grid: #e7eaf0;
+  --chart-axis: #8a93a5;
+  --chart-surface: #ffffff;
+
+  /* Chat playground */
+  --chat-wall: #eef1f6;
+  --bubble-in: #ffffff;
+  --bubble-out: #dfe5fd;
+  --bubble-out-ink: #18202f;
+  --tick: #8a93a5;
+  --tick-read: #1a8be0;
+  --skeleton: #e6e9ef;
+  --skeleton-hi: #f2f4f7;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --canvas: #0c1018;
+  --panel: #131925;
+  --panel-2: #171e2c;
+  --sunken: #0f141e;
+  --hover: #1b2333;
+  --line: #252e3f;
+  --line-soft: #1e2635;
+  --line-strong: #364257;
+
+  --ink: #e4e8f1;
+  --ink-2: #a8b2c5;
+  --ink-3: #7f8a9f;
+  --ink-disabled: #566074;
+
+  --accent: #7088ff;
+  --accent-hover: #8a9dff;
+  --accent-soft: #1c2547;
+  --accent-soft-2: #263160;
+  --accent-ink: #a7b5ff;
+  --on-accent: #0b1020;
+
+  --ok: #35c27b;
+  --ok-soft: #10281c;
+  --ok-ink: #5fd99a;
+  --warn: #e8a83d;
+  --warn-soft: #2c2210;
+  --warn-ink: #f1c26e;
+  --danger: #f2625b;
+  --danger-hover: #ff7a73;
+  --danger-soft: #331718;
+  --danger-ink: #ff8f89;
+  --info: #5aa6ee;
+  --info-soft: #11233a;
+  --info-ink: #8cc3f6;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 18px -6px rgba(0, 0, 0, 0.6), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 28px 64px -16px rgba(0, 0, 0, 0.75), 0 2px 8px rgba(0, 0, 0, 0.5);
+  --overlay: rgba(3, 6, 12, 0.66);
+  --focus: 0 0 0 2px var(--panel), 0 0 0 4px rgba(112, 136, 255, 0.7);
+
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-grid: #232c3c;
+  --chart-axis: #7f8a9f;
+  --chart-surface: #131925;
+
+  --chat-wall: #0e131c;
+  --bubble-in: #1a2232;
+  --bubble-out: #24305f;
+  --bubble-out-ink: #e9ecf6;
+  --tick: #7f8a9f;
+  --tick-read: #53bdeb;
+  --skeleton: #1b2232;
+  --skeleton-hi: #232c3f;
+}

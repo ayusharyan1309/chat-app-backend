@@ -1,145 +1,111 @@
-import React, { useState } from 'react';
-import { useApp } from '../context/AppContext';
+import { Eye, EyeOff, Moon, Sun } from 'lucide-react'
+import { useState, type FormEvent } from 'react'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { errorMessage } from '../api/http'
+import { BrandMark } from '../components/layout/BrandMark'
+import { Button, IconButton } from '../components/ui/Button'
+import { Callout } from '../components/ui/Feedback'
+import { Field, Input } from '../components/ui/Form'
+import { useDocumentTitle } from '../hooks/misc'
+import { useAuth } from '../state/auth'
+import { useTheme } from '../state/theme'
 
-export const LoginPage: React.FC = () => {
-  const { login } = useApp();
-  const [email, setEmail] = useState('');
-  const [token, setToken] = useState('');
-  const [error, setError] = useState('');
+interface LocationState {
+  from?: string
+}
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.trim() || !token.trim()) {
-      setError('Please enter both email and token');
-      return;
+export function LoginPage() {
+  useDocumentTitle('Sign in')
+  const { status, login, expired } = useAuth()
+  const { theme, toggle } = useTheme()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const from = (location.state as LocationState | null)?.from ?? '/'
+
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  if (status === 'authenticated') return <Navigate to={from} replace />
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!email.trim() || !password) {
+      setError('Enter your email and password.')
+      return
     }
-    login(email.trim(), token.trim());
-  };
+    setBusy(true)
+    setError(null)
+    try {
+      await login(email.trim(), password)
+      navigate(from === '/login' ? '/' : from, { replace: true })
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
-    <div style={styles.container}>
-      <div style={styles.card}>
-        <div style={styles.header}>
-          <span style={styles.logo}>💬</span>
-          <h1 style={styles.title}>ChatApp</h1>
-          <p style={styles.subtitle}>Sign in to start chatting</p>
-        </div>
-
-        <form onSubmit={handleSubmit} style={styles.form}>
-          <div style={styles.field}>
-            <label style={styles.label}>Email</label>
-            <input
-              style={styles.input}
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="your@email.com"
-              autoFocus
-            />
-          </div>
-
-          <div style={styles.field}>
-            <label style={styles.label}>Auth Token (Firebase ID Token)</label>
-            <input
-              style={styles.input}
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="Paste your Firebase ID token"
-            />
-          </div>
-
-          {error && <div style={styles.error}>{error}</div>}
-
-          <button type="submit" style={styles.loginBtn}>
-            Sign In
-          </button>
-        </form>
-
-        <div style={styles.footer}>
-          <button
-            style={styles.devBtn}
-            onClick={() => login('dev@test.com', 'dev-token')}
-          >
-            🚀 Quick Dev Login (no auth)
-          </button>
-          <p style={styles.hint}>
-            Use your Firebase ID token for authentication.
-            <br />
-            Or use Dev Login for testing.
-          </p>
-        </div>
+    <div className="login">
+      <div className="login__theme">
+        <IconButton
+          label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          icon={theme === 'dark' ? <Sun size={17} aria-hidden /> : <Moon size={17} aria-hidden />}
+          onClick={toggle}
+        />
       </div>
+      <main className="login__panel">
+        <div className="login__brand">
+          <BrandMark size={36} />
+          <div>
+            <h1 className="login__title">Chat Platform</h1>
+            <p className="login__subtitle">Operator console</p>
+          </div>
+        </div>
+        <form className="login__form" onSubmit={submit} noValidate>
+          {expired ? <Callout tone="warn">Your session expired. Sign in again to continue.</Callout> : null}
+          <Field label="Email">
+            {(c) => (
+              <Input
+                {...c}
+                type="email"
+                autoComplete="username"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoFocus
+                placeholder="you@company.com"
+              />
+            )}
+          </Field>
+          <Field label="Password">
+            {(c) => (
+              <Input
+                {...c}
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                suffix={
+                  <button type="button" className="input-reveal" onClick={() => setShowPassword((v) => !v)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                    {showPassword ? <EyeOff size={15} aria-hidden /> : <Eye size={15} aria-hidden />}
+                  </button>
+                }
+              />
+            )}
+          </Field>
+          {error ? <Callout tone="danger">{error}</Callout> : null}
+          <Button type="submit" variant="primary" loading={busy} className="login__submit">
+            Sign in
+          </Button>
+        </form>
+        <p className="login__foot">
+          First run? Sign in with the bootstrap admin configured on the backend (application.yml or environment), then
+          create named admins under Admins.
+        </p>
+      </main>
     </div>
-  );
-};
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: '100vh',
-    backgroundColor: '#f5f6fa',
-  },
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: '16px',
-    padding: '40px',
-    width: '400px',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
-  },
-  header: {
-    textAlign: 'center',
-    marginBottom: '32px',
-  },
-  logo: { fontSize: '48px' },
-  title: { fontSize: '28px', fontWeight: 'bold', margin: '8px 0 4px', color: '#1a1a2e' },
-  subtitle: { color: '#666', fontSize: '14px' },
-  form: { display: 'flex', flexDirection: 'column', gap: '16px' },
-  field: { display: 'flex', flexDirection: 'column', gap: '4px' },
-  label: { fontSize: '13px', fontWeight: '600', color: '#333' },
-  input: {
-    padding: '12px 14px',
-    border: '1px solid #d0d0d0',
-    borderRadius: '10px',
-    fontSize: '14px',
-    outline: 'none',
-    transition: 'border-color 0.2s',
-  },
-  error: {
-    padding: '10px',
-    backgroundColor: '#f8d7da',
-    color: '#721c24',
-    borderRadius: '8px',
-    fontSize: '13px',
-    textAlign: 'center',
-  },
-  loginBtn: {
-    padding: '14px',
-    backgroundColor: '#6c5ce7',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '10px',
-    fontSize: '16px',
-    fontWeight: '600',
-    cursor: 'pointer',
-    marginTop: '8px',
-  },
-  footer: { marginTop: '24px', textAlign: 'center' },
-  devBtn: {
-    width: '100%',
-    padding: '12px',
-    backgroundColor: '#00b894',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '10px',
-    fontSize: '14px',
-    fontWeight: '600',
-    cursor: 'pointer',
-    marginBottom: '16px',
-  },
-  hint: { fontSize: '12px', color: '#888', lineHeight: '1.6' },
-};
-
-export default LoginPage;
+  )
+}
