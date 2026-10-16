@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <pre>LOAD_TEST_URL=http://localhost:18081 LOAD_CONVERSATIONS=25 LOAD_MESSAGES=40 LOAD_INTERVAL_MS=20 mvn test -Dtest=LoadSmokeTest</pre>
  */
 @EnabledIfEnvironmentVariable(named = "LOAD_TEST_URL", matches = ".+")
-class LoadSmokeTest {
+class LoadSmokeIT {
 
     private final String base = System.getenv("LOAD_TEST_URL");
     private final int conversations = Integer.parseInt(System.getenv().getOrDefault("LOAD_CONVERSATIONS", "25"));

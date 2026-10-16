@@ -53,7 +53,7 @@ import static org.awaitility.Awaitility.await;
         "platform.public-url=http://localhost:0"
 })
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class PlatformIntegrationTest {
+class PlatformIT {
 
     @LocalServerPort
     int port;

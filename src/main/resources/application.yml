@@ -23,6 +23,9 @@ spring:
   jpa:
     open-in-view: false
     hibernate:
+      # Liquibase owns the schema. Hibernate validation is off because the JSON columns are
+      # CLOB/TEXT/LONGTEXT per dialect (see docs/ENGINEERING_REVIEW.md); integration tests
+      # against PostgreSQL and MySQL exercise every mapping instead.
       ddl-auto: none
     properties:
       hibernate:

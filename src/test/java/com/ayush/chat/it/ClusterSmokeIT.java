@@ -34,7 +34,7 @@ import static org.awaitility.Awaitility.await;
  * <pre>CLUSTER_NODE_A=http://localhost:18081 CLUSTER_NODE_B=http://localhost:18082 mvn test -Dtest=ClusterSmokeTest</pre>
  */
 @EnabledIfEnvironmentVariable(named = "CLUSTER_NODE_A", matches = ".+")
-class ClusterSmokeTest {
+class ClusterSmokeIT {
 
     private final String nodeA = System.getenv("CLUSTER_NODE_A");
     private final String nodeB = System.getenv("CLUSTER_NODE_B");
