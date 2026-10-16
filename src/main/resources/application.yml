@@ -134,3 +134,4 @@ logging:
     org.apache.kafka: WARN
     com.datastax.oss.driver: WARN
     org.mongodb.driver: WARN
+    org.hibernate.orm.incubating: ERROR

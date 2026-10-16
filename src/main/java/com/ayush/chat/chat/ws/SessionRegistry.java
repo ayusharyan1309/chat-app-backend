@@ -19,6 +19,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SessionRegistry {
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+    /** STOMP authenticates on CONNECT, not the handshake, so the user is bound here by session id. */
+    private final Map<String, Principals.ChatUserPrincipal> users = new ConcurrentHashMap<>();
 
     void register(WebSocketSession session) {
         sessions.put(session.getId(), session);
@@ -26,6 +28,14 @@ public class SessionRegistry {
 
     void unregister(WebSocketSession session) {
         sessions.remove(session.getId());
+        users.remove(session.getId());
+    }
+
+    /** STOMP session ids equal the underlying WebSocket session ids. */
+    void bind(String sessionId, Principals.ChatUserPrincipal principal) {
+        if (sessions.containsKey(sessionId)) {
+            users.put(sessionId, principal);
+        }
     }
 
     public int closeTenant(String tenant, String reason) {
@@ -38,8 +48,9 @@ public class SessionRegistry {
 
     private int closeWhere(java.util.function.Predicate<Principals.ChatUserPrincipal> match, String reason) {
         int closed = 0;
-        for (WebSocketSession session : sessions.values()) {
-            if (session.getPrincipal() instanceof Principals.ChatUserPrincipal p && match.test(p)) {
+        for (Map.Entry<String, Principals.ChatUserPrincipal> entry : users.entrySet()) {
+            WebSocketSession session = sessions.get(entry.getKey());
+            if (session != null && match.test(entry.getValue())) {
                 try {
                     session.close(CloseStatus.POLICY_VIOLATION.withReason(reason));
                     closed++;

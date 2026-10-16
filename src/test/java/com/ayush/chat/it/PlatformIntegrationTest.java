@@ -160,7 +160,9 @@ class PlatformIntegrationTest {
 
         @Override
         public void close() {
-            session.disconnect();
+            if (session.isConnected()) {
+                session.disconnect();
+            }
             client.stop();
         }
     }
@@ -268,7 +270,10 @@ class PlatformIntegrationTest {
     void suspensionBlocksTheTenant() throws Exception {
         TenantFixture t = tenant("free");
         String alice = userToken(t, "alice");
+        Socket socket = new Socket(alice);
         admin("POST", "/api/admin/tenants/" + t.slug() + "/suspend", null, 200);
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(socket.session.isConnected()).isFalse());
+        socket.client.stop();
         assertThat(call("GET", "/api/v1/me", null, Map.of("Authorization", "Bearer " + alice)).status()).isEqualTo(403);
         Response serverCall = call("POST", "/api/v1/server/tokens", Map.of("userId", "alice"), Map.of("X-API-Key", t.apiKey()));
         assertThat(serverCall.status()).isEqualTo(403);

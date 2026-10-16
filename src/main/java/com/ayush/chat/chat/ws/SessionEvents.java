@@ -23,6 +23,7 @@ public class SessionEvents {
 
     private final PresenceService presence;
     private final ClusterService cluster;
+    private final SessionRegistry registry;
     private final Map<String, String> sessionTenants = new ConcurrentHashMap<>();
 
     @EventListener
@@ -35,6 +36,7 @@ public class SessionEvents {
             return;
         }
         sessionTenants.put(sessionId, principal.tenant());
+        registry.bind(sessionId, principal);
         cluster.connectionOpened(principal.tenant());
         try {
             presence.sessionOpened(sessionId, principal);
