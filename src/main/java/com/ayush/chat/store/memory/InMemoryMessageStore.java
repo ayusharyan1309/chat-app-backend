@@ -237,7 +237,11 @@ public class InMemoryMessageStore implements MessageStore {
     public void upsertParticipant(Participant participant) {
         participants.computeIfAbsent(k(participant.getTenantId(), participant.getConversationId()),
                         x -> new ConcurrentHashMap<>())
-                .put(participant.getUserId(), copy(participant, Participant.class));
+                .merge(participant.getUserId(), copy(participant, Participant.class), (existing, next) -> {
+                    next.setDeliveredSeq(Math.max(existing.getDeliveredSeq(), next.getDeliveredSeq()));
+                    next.setReadSeq(Math.max(existing.getReadSeq(), next.getReadSeq()));
+                    return next;
+                });
     }
 
     @Override

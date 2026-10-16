@@ -539,10 +539,13 @@ public class SqlMessageStore implements MessageStore {
     @Override
     public void upsertParticipant(Participant p) {
         transaction(conn -> {
-            int updated = update(conn, "UPDATE " + participants + " SET role = ?, joined_seq = ?, delivered_seq = ?,"
-                            + " read_seq = ?, muted = ?, archived = ?, pinned = ?, joined_at = ?, left_at = ?, updated_at = ?"
+            int updated = update(conn, "UPDATE " + participants + " SET role = ?, joined_seq = ?,"
+                            + " delivered_seq = CASE WHEN delivered_seq < ? THEN ? ELSE delivered_seq END,"
+                            + " read_seq = CASE WHEN read_seq < ? THEN ? ELSE read_seq END,"
+                            + " muted = ?, archived = ?, pinned = ?, joined_at = ?, left_at = ?, updated_at = ?"
                             + " WHERE tenant_id = ? AND conversation_id = ? AND user_id = ?",
-                    p.getRole().name(), p.getJoinedSeq(), p.getDeliveredSeq(), p.getReadSeq(), p.isMuted(),
+                    p.getRole().name(), p.getJoinedSeq(), p.getDeliveredSeq(), p.getDeliveredSeq(),
+                    p.getReadSeq(), p.getReadSeq(), p.isMuted(),
                     p.isArchived(), p.isPinned(), millis(p.getJoinedAt()), millis(p.getLeftAt()),
                     millis(p.getUpdatedAt() != null ? p.getUpdatedAt() : Instant.now()),
                     p.getTenantId(), p.getConversationId(), p.getUserId());

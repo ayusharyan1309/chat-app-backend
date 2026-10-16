@@ -9,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 
 /**
@@ -29,6 +30,8 @@ public class ConnectorHolder<T extends Connector> implements AutoCloseable {
     private final long graceMillis;
     private final AtomicReference<Active<T>> active = new AtomicReference<>();
     private final List<BiConsumer<T, T>> swapListeners = new CopyOnWriteArrayList<>();
+    /** Not synchronized: connecting blocks, and must not pin virtual threads. */
+    private final ReentrantLock lock = new ReentrantLock();
 
     private record Active<T>(ConnectorConfig config, T connector) {
     }
@@ -65,7 +68,16 @@ public class ConnectorHolder<T extends Connector> implements AutoCloseable {
      * Activate the given config. No-op if it equals the active one. On failure the previous
      * connector stays active and the exception propagates.
      */
-    public synchronized boolean apply(ConnectorConfig config) {
+    public boolean apply(ConnectorConfig config) {
+        lock.lock();
+        try {
+            return doApply(config);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private boolean doApply(ConnectorConfig config) {
         Active<T> current = active.get();
         if (current != null && Objects.equals(current.config(), config)) {
             return false;
@@ -88,10 +100,15 @@ public class ConnectorHolder<T extends Connector> implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
-        Active<T> current = active.getAndSet(null);
-        if (current != null) {
-            current.connector().close();
+    public void close() {
+        lock.lock();
+        try {
+            Active<T> current = active.getAndSet(null);
+            if (current != null) {
+                current.connector().close();
+            }
+        } finally {
+            lock.unlock();
         }
     }
 }

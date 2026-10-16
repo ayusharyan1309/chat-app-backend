@@ -60,6 +60,7 @@ public class ChatService {
     private final RealtimeGateway gateway;
     private final PresenceService presence;
     private final MetricsService metrics;
+    private final MutationLock locks;
 
     private final Cache<String, Boolean> activeUsers = Caffeine.newBuilder()
             .expireAfterWrite(Duration.ofSeconds(30)).maximumSize(500_000).build();
@@ -106,6 +107,7 @@ public class ChatService {
         if (input.id() == null || !USER_ID.matcher(input.id()).matches()) {
             throw ApiException.badRequest("id must be 1-128 chars of letters, digits and _ . @ : + -");
         }
+        validateProfile(input.displayName(), input.email(), input.phone(), input.avatarUrl(), input.about());
         Optional<ChatUser> existing = c.store().findUser(c.slug(), input.id());
         if (existing.isEmpty()) {
             Long max = c.tenant().limits().maxUsers();
@@ -164,12 +166,36 @@ public class ChatService {
         activeUsers.invalidate(key(slug, userId));
     }
 
+    /** Drop this node's cached membership and identity for a conversation (control channel). */
+    public void forgetConversation(String slug, String conversationId) {
+        participantCache.invalidate(key(slug, conversationId));
+        conversationCache.invalidate(key(slug, conversationId));
+    }
+
+    public void forgetBlock(String slug, String pair) {
+        blockCache.invalidate(slug + "|" + pair);
+    }
+
+    private void conversationChanged(String slug, String conversationId) {
+        forgetConversation(slug, conversationId);
+        broadcastControl(new RealtimeGateway.ControlMessage("conversation.changed", slug, null, conversationId));
+    }
+
+    private void broadcastControl(RealtimeGateway.ControlMessage message) {
+        try {
+            gateway.publishControl(message);
+        } catch (Exception e) {
+            log.warn("Could not broadcast {} for {}: {}", message.type(), message.tenant(), e.getMessage());
+        }
+    }
+
     public UserView getUser(String slug, String userId) {
         Ctx c = ctx(slug);
         return userView(c, c.store().findUser(slug, userId).orElseThrow(() -> ApiException.notFound("User '" + userId + "'")));
     }
 
     public UserView updateProfile(String slug, String userId, String displayName, String avatarUrl, String about) {
+        validateProfile(displayName, null, null, avatarUrl, about);
         Ctx c = ctx(slug);
         ChatUser user = c.store().findUser(slug, userId).orElseThrow(() -> ApiException.notFound("User"));
         ChatUser updated = c.store().upsertUser(user.toBuilder()
@@ -237,6 +263,7 @@ public class ChatService {
         }
         c.store().setBlocked(slug, me, other, blocked);
         blockCache.invalidate(slug + "|" + me + "|" + other);
+        broadcastControl(new RealtimeGateway.ControlMessage("block.changed", slug, null, me + "|" + other));
     }
 
     // ================================================================== conversations
@@ -273,6 +300,8 @@ public class ChatService {
         if (title == null || title.isBlank() || title.length() > 255) {
             throw ApiException.badRequest("title is required (max 255 characters)");
         }
+        maxLength("description", description, 1024);
+        maxLength("avatarUrl", avatarUrl, 1024);
         Set<String> members = new LinkedHashSet<>(memberIds == null ? List.of() : memberIds);
         members.remove(me);
         checkGroupSize(c, members.size() + 1);
@@ -315,11 +344,14 @@ public class ChatService {
         List<Participant> members = c.store().listParticipants(slug, conversationId);
         Map<String, ChatUser> users = c.store().findUsers(slug, members.stream().map(Participant::getUserId).toList())
                 .stream().collect(Collectors.toMap(ChatUser::getId, u -> u));
+        boolean receipts = c.tenant().has(Feature.READ_RECEIPTS);
         List<ParticipantView> participantViews = members.stream()
                 .map(p -> {
                     ChatUser u = users.get(p.getUserId());
+                    boolean showWatermarks = receipts || p.getUserId().equals(me);
                     return new ParticipantView(p.getUserId(), p.getRole(), u != null ? u.getDisplayName() : p.getUserId(),
-                            u != null ? u.getAvatarUrl() : null, p.getDeliveredSeq(), p.getReadSeq(), p.getJoinedAt());
+                            u != null ? u.getAvatarUrl() : null, showWatermarks ? p.getDeliveredSeq() : 0,
+                            showWatermarks ? p.getReadSeq() : 0, p.getJoinedAt());
                 }).toList();
         UserView peer = peerId(conversation, me)
                 .map(id -> users.containsKey(id) ? userView(c, users.get(id)) : UserView.unknown(id)).orElse(null);
@@ -328,6 +360,9 @@ public class ChatService {
 
     public ConversationView updateGroup(String slug, String me, String conversationId, String title, String description,
                                         String avatarUrl) {
+        maxLength("title", title, 255);
+        maxLength("description", description, 1024);
+        maxLength("avatarUrl", avatarUrl, 1024);
         Ctx c = ctx(slug);
         Conversation conversation = conversation(c, conversationId);
         requireGroup(conversation);
@@ -338,7 +373,7 @@ public class ChatService {
                 .avatarUrl(avatarUrl != null ? avatarUrl : conversation.getAvatarUrl())
                 .updatedAt(Instant.now()).build();
         c.store().updateConversation(updated);
-        conversationCache.invalidate(key(slug, conversationId));
+        conversationChanged(slug, conversationId);
         if (!Objects.equals(updated.getTitle(), conversation.getTitle())) {
             systemMessage(c, updated, me, "group.renamed", List.of(),
                     name(c, me) + " changed the group name to \"" + updated.getTitle() + "\"");
@@ -350,6 +385,12 @@ public class ChatService {
 
     public ConversationView updateSettings(String slug, String me, String conversationId, Boolean muted, Boolean archived,
                                            Boolean pinned) {
+        return locks.withLock(membersLock(slug, conversationId),
+                () -> updateSettingsLocked(slug, me, conversationId, muted, archived, pinned));
+    }
+
+    private ConversationView updateSettingsLocked(String slug, String me, String conversationId, Boolean muted,
+                                                  Boolean archived, Boolean pinned) {
         Ctx c = ctx(slug);
         Participant self = requireMember(c, conversationId, me);
         c.store().upsertParticipant(self.toBuilder()
@@ -363,6 +404,10 @@ public class ChatService {
     }
 
     public ConversationView addMembers(String slug, String me, String conversationId, Collection<String> userIds) {
+        return locks.withLock(membersLock(slug, conversationId), () -> addMembersLocked(slug, me, conversationId, userIds));
+    }
+
+    private ConversationView addMembersLocked(String slug, String me, String conversationId, Collection<String> userIds) {
         Ctx c = ctx(slug);
         c.tenant().require(Feature.GROUP_CHAT);
         Conversation conversation = conversation(c, conversationId);
@@ -398,6 +443,11 @@ public class ChatService {
     }
 
     public ConversationView setRole(String slug, String me, String conversationId, String userId, Participant.Role role) {
+        return locks.withLock(membersLock(slug, conversationId), () -> setRoleLocked(slug, me, conversationId, userId, role));
+    }
+
+    private ConversationView setRoleLocked(String slug, String me, String conversationId, String userId,
+                                           Participant.Role role) {
         Ctx c = ctx(slug);
         Conversation conversation = conversation(c, conversationId);
         requireGroup(conversation);
@@ -416,6 +466,13 @@ public class ChatService {
     }
 
     public void removeMember(String slug, String me, String conversationId, String userId) {
+        locks.withLock(membersLock(slug, conversationId), () -> {
+            removeMemberLocked(slug, me, conversationId, userId);
+            return null;
+        });
+    }
+
+    private void removeMemberLocked(String slug, String me, String conversationId, String userId) {
         Ctx c = ctx(slug);
         Conversation conversation = conversation(c, conversationId);
         requireGroup(conversation);
@@ -442,6 +499,7 @@ public class ChatService {
                     leaving ? name(c, me) + " left" : name(c, me) + " removed " + name(c, userId));
             notifyConversation(c, c.store().findConversation(slug, conversationId).orElseThrow(), remaining);
         }
+        conversationChanged(slug, conversationId);
         gateway.toUser(slug, userId, ChatEvent.of(ChatEvent.CONVERSATION_REMOVED, conversationId,
                 Map.of("conversationId", conversationId)));
         domainEvent(c, DomainEvent.MEMBER_REMOVED, me, Map.of("conversationId", conversationId, "userIds", List.of(userId),
@@ -501,13 +559,19 @@ public class ChatService {
         }
         ChatMessage.Type type = input.type() == null ? ChatMessage.Type.TEXT : input.type();
         validateContent(c, type, input);
-        return append(c, conversation, members, senderId, type, input, type != ChatMessage.Type.SYSTEM);
+        return append(c, conversation, members, senderId, type, input, true);
     }
 
     private SendResult append(Ctx c, Conversation conversation, List<Participant> members, String sender,
                               ChatMessage.Type type, SendInput input, boolean metered) {
-        if (input.replyToId() != null && c.store().findMessage(c.slug(), conversation.getId(), input.replyToId()).isEmpty()) {
-            throw ApiException.badRequest("replyToId does not reference a message in this conversation");
+        if (input.replyToId() != null) {
+            long floor = members.stream().filter(p -> p.getUserId().equals(sender)).mapToLong(Participant::getJoinedSeq)
+                    .findFirst().orElse(Long.MAX_VALUE);
+            boolean visible = c.store().findMessage(c.slug(), conversation.getId(), input.replyToId())
+                    .filter(m -> m.getSeq() > floor).isPresent();
+            if (!visible) {
+                throw ApiException.badRequest("replyToId does not reference a message in this conversation");
+            }
         }
         if (metered) {
             usage.checkRate(c.tenant(), sender);
@@ -548,7 +612,12 @@ public class ChatService {
     private void fanOutNewMessage(Ctx c, Conversation conversation, List<Participant> members, String sender,
                                   MessageView view) {
         List<String> userIds = members.stream().map(Participant::getUserId).toList();
-        gateway.toUsers(c.slug(), userIds, ChatEvent.of(ChatEvent.MESSAGE_NEW, conversation.getId(), view));
+        try {
+            gateway.toUsers(c.slug(), userIds, ChatEvent.of(ChatEvent.MESSAGE_NEW, conversation.getId(), view));
+        } catch (Exception e) {
+            // The message is durable; clients catch up with after=seq. Still emit webhooks/push below.
+            log.error("Realtime fan-out failed for {}/{}: {}", c.slug(), conversation.getId(), e.getMessage());
+        }
         List<String> pushRecipients = members.stream()
                 .filter(p -> !p.getUserId().equals(sender) && !p.isMuted())
                 .map(Participant::getUserId).toList();
@@ -559,64 +628,91 @@ public class ChatService {
     public MessageView edit(String slug, String me, String conversationId, String messageId, String content) {
         Ctx c = ctx(slug);
         c.tenant().require(Feature.MESSAGE_EDITING);
-        requireMember(c, conversationId, me);
-        ChatMessage message = message(c, conversationId, messageId);
-        if (!me.equals(message.getSenderId())) {
-            throw ApiException.forbidden("You can only edit your own messages");
-        }
-        if (message.isDeleted()) {
-            throw ApiException.badRequest("Deleted messages cannot be edited");
-        }
-        int window = c.tenant().settings().editWindowMinutes();
-        if (window > 0 && message.getCreatedAt().isBefore(Instant.now().minus(Duration.ofMinutes(window)))) {
-            throw ApiException.forbidden("Messages can only be edited within " + window + " minutes");
-        }
+        Participant self = requireMember(c, conversationId, me);
         validateText(c, content, true);
-        message.setContent(content);
-        message.setEdited(true);
-        message.setEditedAt(Instant.now());
-        c.store().updateMessage(message);
-        return broadcastUpdate(c, message, DomainEvent.MESSAGE_UPDATED, me);
+        return locks.withLock(messageLock(c, conversationId, messageId), () -> {
+            ChatMessage message = visibleMessage(c, self, conversationId, messageId);
+            if (message.getType() == ChatMessage.Type.SYSTEM) {
+                throw ApiException.forbidden("System notices cannot be edited");
+            }
+            if (!me.equals(message.getSenderId())) {
+                throw ApiException.forbidden("You can only edit your own messages");
+            }
+            if (message.isDeleted()) {
+                throw ApiException.badRequest("Deleted messages cannot be edited");
+            }
+            int window = c.tenant().settings().editWindowMinutes();
+            if (window > 0 && message.getCreatedAt().isBefore(Instant.now().minus(Duration.ofMinutes(window)))) {
+                throw ApiException.forbidden("Messages can only be edited within " + window + " minutes");
+            }
+            message.setContent(content);
+            message.setEdited(true);
+            message.setEditedAt(Instant.now());
+            c.store().updateMessage(message);
+            return broadcastUpdate(c, message, DomainEvent.MESSAGE_UPDATED, me);
+        });
     }
 
     public MessageView delete(String slug, String me, String conversationId, String messageId) {
         Ctx c = ctx(slug);
         c.tenant().require(Feature.MESSAGE_DELETION);
         Participant self = requireMember(c, conversationId, me);
-        ChatMessage message = message(c, conversationId, messageId);
-        if (!me.equals(message.getSenderId()) && !self.isAdmin()) {
-            throw ApiException.forbidden("You can only delete your own messages");
-        }
-        if (message.isDeleted()) {
-            return MessageView.of(message);
-        }
-        message.setDeleted(true);
-        message.setDeletedAt(Instant.now());
-        message.setContent(null);
-        message.setAttachment(null);
-        message.setReactions(new LinkedHashMap<>());
-        c.store().updateMessage(message);
-        return broadcastUpdate(c, message, DomainEvent.MESSAGE_DELETED, me);
+        return locks.withLock(messageLock(c, conversationId, messageId), () -> {
+            ChatMessage message = visibleMessage(c, self, conversationId, messageId);
+            if (message.getType() == ChatMessage.Type.SYSTEM) {
+                throw ApiException.forbidden("System notices cannot be deleted");
+            }
+            if (!me.equals(message.getSenderId()) && !self.isAdmin()) {
+                throw ApiException.forbidden("You can only delete your own messages");
+            }
+            if (message.isDeleted()) {
+                return MessageView.of(message);
+            }
+            message.setDeleted(true);
+            message.setDeletedAt(Instant.now());
+            message.setContent(null);
+            message.setAttachment(null);
+            message.setReactions(new LinkedHashMap<>());
+            c.store().updateMessage(message);
+            return broadcastUpdate(c, message, DomainEvent.MESSAGE_DELETED, me);
+        });
     }
 
     public MessageView react(String slug, String me, String conversationId, String messageId, String emoji) {
         Ctx c = ctx(slug);
         c.tenant().require(Feature.MESSAGE_REACTIONS);
-        requireMember(c, conversationId, me);
-        ChatMessage message = message(c, conversationId, messageId);
-        if (message.isDeleted()) {
-            throw ApiException.badRequest("Cannot react to a deleted message");
+        Participant self = requireMember(c, conversationId, me);
+        if (emoji != null && (emoji.isBlank() || emoji.codePointCount(0, emoji.length()) > 8)) {
+            throw ApiException.badRequest("emoji must be a short emoji string");
         }
-        if (emoji == null) {
-            message.removeReaction(me);
-        } else {
-            if (emoji.isBlank() || emoji.codePointCount(0, emoji.length()) > 8) {
-                throw ApiException.badRequest("emoji must be a short emoji string");
+        return locks.withLock(messageLock(c, conversationId, messageId), () -> {
+            ChatMessage message = visibleMessage(c, self, conversationId, messageId);
+            if (message.isDeleted()) {
+                throw ApiException.badRequest("Cannot react to a deleted message");
             }
-            message.addReaction(emoji, me);
-        }
-        c.store().updateMessage(message);
-        return broadcastUpdate(c, message, DomainEvent.MESSAGE_UPDATED, me);
+            if (emoji == null) {
+                message.removeReaction(me);
+            } else {
+                message.addReaction(emoji, me);
+            }
+            c.store().updateMessage(message);
+            return broadcastUpdate(c, message, DomainEvent.MESSAGE_UPDATED, me);
+        });
+    }
+
+    /** A message the participant is allowed to see: messages from before they joined do not exist for them. */
+    private ChatMessage visibleMessage(Ctx c, Participant self, String conversationId, String messageId) {
+        return c.store().findMessage(c.slug(), conversationId, messageId)
+                .filter(m -> m.getSeq() > self.getJoinedSeq())
+                .orElseThrow(() -> ApiException.notFound("Message"));
+    }
+
+    private static String membersLock(String slug, String conversationId) {
+        return "members:" + slug + ":" + conversationId;
+    }
+
+    private static String messageLock(Ctx c, String conversationId, String messageId) {
+        return "msg:" + c.slug() + ":" + conversationId + ":" + messageId;
     }
 
     private MessageView broadcastUpdate(Ctx c, ChatMessage message, String domainType, String actor) {
@@ -747,13 +843,23 @@ public class ChatService {
                 requireAttachment(input);
                 validateText(c, input.content(), false);
             }
-            case TEXT, SYSTEM -> validateText(c, input.content(), true);
+            case TEXT, SYSTEM -> {
+                rejectAttachment(input, type);
+                validateText(c, input.content(), true);
+            }
             case LOCATION, CONTACT -> {
+                rejectAttachment(input, type);
                 if (input.metadata() == null || input.metadata().isEmpty()) {
                     throw ApiException.badRequest(type + " messages carry their payload in metadata");
                 }
                 validateText(c, input.content(), false);
             }
+        }
+    }
+
+    private static void rejectAttachment(SendInput input, ChatMessage.Type type) {
+        if (input.attachment() != null) {
+            throw ApiException.badRequest(type + " messages cannot carry an attachment; use IMAGE, VIDEO, AUDIO or FILE");
         }
     }
 
@@ -803,7 +909,7 @@ public class ChatService {
             gateway.toUser(c.slug(), p.getUserId(), ChatEvent.of(ChatEvent.CONVERSATION_UPDATED, conversation.getId(),
                     Views.conversation(conversation, p, peer, null)));
         }
-        participantCache.invalidate(key(c.slug(), conversation.getId()));
+        conversationChanged(c.slug(), conversation.getId());
     }
 
     private static ConversationView withoutParticipants(ConversationView v) {
@@ -875,6 +981,22 @@ public class ChatService {
 
     private static String key(String a, String b) {
         return a + "::" + b;
+    }
+
+    /** Field limits match the store schema; violations are a 400, never a database error. */
+    private static String maxLength(String field, String value, int max) {
+        if (value != null && value.length() > max) {
+            throw ApiException.badRequest(field + " must be at most " + max + " characters");
+        }
+        return value;
+    }
+
+    private static void validateProfile(String displayName, String email, String phone, String avatarUrl, String about) {
+        maxLength("displayName", displayName, 255);
+        maxLength("email", email, 255);
+        maxLength("phone", phone, 64);
+        maxLength("avatarUrl", avatarUrl, 1024);
+        maxLength("about", about, 1024);
     }
 
     private static int clamp(int value, int min, int max) {

@@ -63,7 +63,7 @@ public final class SqlStoreFactories {
             List<ConfigField> fields = new ArrayList<>(commonFields(
                     "postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres",
                     null, true));
-            fields.set(0, ConfigField.of("url", "Connection string").required()
+            fields.set(0, ConfigField.of("url", "Connection string").secret().required()
                     .placeholder("postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres")
                     .description("Supabase dashboard → Project Settings → Database → Connection string (session pooler)")
                     .build());

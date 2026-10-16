@@ -125,7 +125,7 @@ public class WebhookService {
         String secret = "whsec_" + Ids.randomToken(32);
         webhook.setSecret(cipher.encrypt(secret));
         webhooks.save(webhook);
-        targets.invalidate(tenant.getSlug());
+        targetsChanged(tenant.getSlug());
         return view(webhook, secret);
     }
 
@@ -134,14 +134,29 @@ public class WebhookService {
         Webhook webhook = owned(tenant, id);
         apply(webhook, input);
         webhooks.save(webhook);
-        targets.invalidate(tenant.getSlug());
+        targetsChanged(tenant.getSlug());
         return view(webhook, null);
     }
 
     @Transactional
     public void delete(Tenant tenant, Long id) {
         webhooks.delete(owned(tenant, id));
-        targets.invalidate(tenant.getSlug());
+        targetsChanged(tenant.getSlug());
+    }
+
+    /** Drop this node's cached targets (control channel). */
+    public void forgetTargets(String slug) {
+        targets.invalidate(slug);
+    }
+
+    /** Local invalidation now, every other node via the control channel. */
+    private void targetsChanged(String slug) {
+        targets.invalidate(slug);
+        try {
+            gateway.publishControl(new RealtimeGateway.ControlMessage("webhooks.changed", slug, null));
+        } catch (Exception e) {
+            log.warn("Could not broadcast webhook change for {}: {}", slug, e.getMessage());
+        }
     }
 
     @Transactional(readOnly = true)

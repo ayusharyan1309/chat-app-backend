@@ -17,7 +17,8 @@ public abstract class AbstractSqlStoreFactory implements ConnectorFactory<Messag
 
     protected static List<ConfigField> commonFields(String urlPlaceholder, Object defaultUrl, boolean credentials) {
         List<ConfigField> fields = new ArrayList<>();
-        fields.add(ConfigField.of("url", "Connection URL").required().defaultValue(defaultUrl).placeholder(urlPlaceholder)
+        // Secret: provider URIs routinely embed the password (postgresql://user:pass@host/db).
+        fields.add(ConfigField.of("url", "Connection URL").secret().required().defaultValue(defaultUrl).placeholder(urlPlaceholder)
                 .description("JDBC URL or a provider URI such as postgresql://user:pass@host:5432/db").build());
         if (credentials) {
             fields.add(ConfigField.of("username", "Username").build());

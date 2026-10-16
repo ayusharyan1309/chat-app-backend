@@ -469,15 +469,24 @@ public class FirestoreMessageStore implements MessageStore {
 
     @Override
     public void upsertParticipant(Participant p) {
-        WriteBatch batch = db.batch();
-        batch.set(participantRef(p.getTenantId(), p.getConversationId(), p.getUserId()), participantDoc(p));
+        DocumentReference ref = participantRef(p.getTenantId(), p.getConversationId(), p.getUserId());
         DocumentReference membership = membershipRef(p.getTenantId(), p.getUserId(), p.getConversationId());
-        if (p.isActive()) {
-            batch.set(membership, membershipDoc(p));
-        } else {
-            batch.delete(membership);
-        }
-        await(batch.commit());
+        await(db.runTransaction(tx -> {
+            DocumentSnapshot existing = tx.get(ref).get();
+            Map<String, Object> doc = participantDoc(p);
+            if (existing.exists()) {
+                // Watermarks only move forward, even when the caller started from a stale read.
+                doc.put("deliveredSeq", Math.max(p.getDeliveredSeq(), longValue(existing.get("deliveredSeq"))));
+                doc.put("readSeq", Math.max(p.getReadSeq(), longValue(existing.get("readSeq"))));
+            }
+            tx.set(ref, doc);
+            if (p.isActive()) {
+                tx.set(membership, membershipDoc(p));
+            } else {
+                tx.delete(membership);
+            }
+            return null;
+        }, TX));
     }
 
     @Override

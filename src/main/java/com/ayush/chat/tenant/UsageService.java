@@ -103,8 +103,13 @@ public class UsageService {
 
     // ------------------------------------------------------------------ metering
 
+    /** Atomic per key with {@code flush()}'s remove(), so no increment lands in an already-flushed array. */
     private void record(String slug, int metric, long delta) {
-        pending.computeIfAbsent(slug + "|" + today(), k -> new AtomicLongArray(3)).addAndGet(metric, delta);
+        pending.compute(slug + "|" + today(), (k, counters) -> {
+            AtomicLongArray target = counters == null ? new AtomicLongArray(3) : counters;
+            target.addAndGet(metric, delta);
+            return target;
+        });
     }
 
     @Scheduled(fixedDelay = 30_000, initialDelay = 30_000)
@@ -133,11 +138,13 @@ public class UsageService {
                 }
             } catch (Exception e) {
                 log.warn("Usage flush failed for {}: {} (will retry)", key, e.getMessage());
-                pending.computeIfAbsent(key, k -> new AtomicLongArray(3));
-                AtomicLongArray retry = pending.get(key);
-                retry.addAndGet(MESSAGES, messages);
-                retry.addAndGet(MEDIA_BYTES, media);
-                retry.addAndGet(API_CALLS, api);
+                pending.compute(key, (k, current) -> {
+                    AtomicLongArray retry = current == null ? new AtomicLongArray(3) : current;
+                    retry.addAndGet(MESSAGES, messages);
+                    retry.addAndGet(MEDIA_BYTES, media);
+                    retry.addAndGet(API_CALLS, api);
+                    return retry;
+                });
             }
         }
     }

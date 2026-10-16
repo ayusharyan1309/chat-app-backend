@@ -69,9 +69,12 @@ public class PlatformProperties {
         private String topicPrefix = "platform.";
     }
 
+    /**
+     * Media links are non-expiring capability URLs (unguessable id + HMAC), like attachment links in
+     * consumer messengers; revoke access by deleting the blob.
+     */
     @Data
     public static class Media {
-        private Duration signedUrlTtl = Duration.ofHours(6);
         private long maxUploadBytes = 100L * 1024 * 1024;
     }
 

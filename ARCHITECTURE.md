@@ -154,10 +154,23 @@ other node.
 - **SSRF guard.** Tenant-supplied URLs (webhooks, the push webhook, JWKS) may not resolve to
   loopback, private, link-local (cloud metadata), CGNAT or reserved addresses unless the operator
   allows it. Webhook targets are checked at save time and again at send time.
-- **Media.** Files get unguessable ids and HMAC-signed capability URLs that work in `<img src>`.
-  When S3 is configured, downloads redirect to presigned URLs.
-- **Audit.** Every admin and server-API mutation is written to `platform_audit_log`, including
-  impersonation tokens issued from the dashboard.
+- **Media.** Files get unguessable ids and HMAC-signed capability URLs that work in `<img src>`. The
+  URLs don't expire, like attachment links in consumer messengers; revoke a file by deleting the
+  blob. Only raster images, video and audio are served inline. Everything else (SVG, HTML, PDF, …)
+  is a download, and every media response carries `Content-Security-Policy: sandbox`, so an
+  upload can never run script on the API/dashboard origin. When S3 is configured, downloads
+  redirect to presigned URLs on the storage origin.
+- **Realtime lockdown.** Clients may `SEND` only to `/app/**` and `SUBSCRIBE` only to
+  `/user/queue/events`. Without the first rule, a client could address another user's queue
+  directly.
+- **Revocation.** Every request re-checks, from short caches invalidated cluster-wide, that the
+  tenant is usable, the end user is active and the admin still exists. Admin roles come from the
+  database, not the token.
+- **Forwarded headers.** `X-Forwarded-For` is trusted only from internal proxies (Tomcat
+  RemoteIpValve). Admin login is throttled per account+IP and per account.
+- **Audit.** Every admin mutation is written to `platform_audit_log`, including impersonation
+  tokens issued from the dashboard, plus user deactivations from the server API. High-volume
+  server-API calls (user upserts, token minting) are metered rather than audited.
 
 ## 6. Data model (message store)
 
@@ -173,7 +186,23 @@ SQL stores timestamps as epoch milliseconds (`BIGINT`) to avoid timezone drift b
 PostgreSQL and MySQL. The schema is created on connect, with an optional table prefix so several
 deployments can share one schema.
 
-## 7. Quality gates
+## 7. Concurrency and consistency notes
+
+- **Shared-record updates.** Edits, reactions and deletes on a message, and membership or settings
+  changes on a conversation, run under a short cluster-wide lock in the cache. The store contract
+  also makes `upsertParticipant` merge receipt watermarks with `max()`, so no write moves a receipt
+  backwards.
+- **Node-local caches** (tenant snapshots, membership, block state, webhook targets, user status)
+  are invalidated on every node through the control channel. Their TTLs (10 to 30 s) only bound
+  staleness if a broadcast is missed.
+- **Webhook delivery** is at-least-once while the dispatching node is running. Retries (5 attempts,
+  exponential backoff) are scheduled in memory, so a node restart drops pending retries. With the
+  Kafka bus, an event that hasn't been dispatched yet is redelivered to another member of the
+  group.
+- **Inbox paging** uses the activity timestamp as its cursor, so conversations that share the exact
+  boundary millisecond can be skipped by `before=`. A compound cursor is on the roadmap.
+
+## 8. Quality gates
 
 - `MessageStoreConformanceTest`: 21 behavioural tests, including 120 concurrent appends that must
   produce contiguous, unique seqs. They run against every store: in-memory, H2, PostgreSQL 16,
@@ -183,7 +212,7 @@ deployments can share one schema.
 - `PlatformIntegrationTest`: 11 end-to-end scenarios over real HTTP and STOMP.
 - `ClusterSmokeTest`: two live nodes.
 
-## 8. Performance baseline
+## 9. Performance baseline
 
 `LoadSmokeTest` ran against one node on a developer laptop, with PostgreSQL 16, Redis and the load
 generator (up to 100 STOMP sockets) **all on the same machine**. These are a floor for capacity
@@ -204,7 +233,7 @@ point, give large tenants dedicated stores or move to Cassandra/ScyllaDB.
 Sends from one socket are processed in receive order, so a sender's messages always get
 increasing seqs. Events to one socket are published in order.
 
-## 9. Adding a provider
+## 10. Adding a provider
 
 1. Implement the SPI (for example `MessageStore`) in a new package.
 2. Add a `@Component` implementing `ConnectorFactory<T>` with a descriptor and its config fields.

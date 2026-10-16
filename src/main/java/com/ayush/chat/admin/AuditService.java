@@ -53,8 +53,7 @@ public class AuditService {
         entry.setTenant(tenant);
         entry.setDetails(details == null || details.length() <= 2000 ? details : details.substring(0, 1997) + "...");
         if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attrs) {
-            String forwarded = attrs.getRequest().getHeader("X-Forwarded-For");
-            entry.setIp(forwarded != null ? forwarded.split(",")[0].trim() : attrs.getRequest().getRemoteAddr());
+            entry.setIp(attrs.getRequest().getRemoteAddr());
         }
         try {
             repository.save(entry);

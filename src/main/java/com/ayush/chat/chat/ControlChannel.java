@@ -1,5 +1,6 @@
 package com.ayush.chat.chat;
 
+import com.ayush.chat.chat.webhook.WebhookService;
 import com.ayush.chat.chat.ws.SessionRegistry;
 import com.ayush.chat.tenant.TenantDirectory;
 import com.ayush.chat.tenant.TenantService;
@@ -22,6 +23,7 @@ public class ControlChannel {
     private final TenantDirectory tenants;
     private final SessionRegistry sessions;
     private final ChatService chat;
+    private final WebhookService webhooks;
 
     @PostConstruct
     void subscribe() {
@@ -56,6 +58,9 @@ public class ControlChannel {
                 chat.forgetUser(message.tenant(), message.userId());
                 sessions.closeUser(message.tenant(), message.userId(), "User deactivated");
             }
+            case "conversation.changed" -> chat.forgetConversation(message.tenant(), message.ref());
+            case "block.changed" -> chat.forgetBlock(message.tenant(), message.ref());
+            case "webhooks.changed" -> webhooks.forgetTargets(message.tenant());
             default -> log.debug("Ignoring control message {}", message.type());
         }
     }

@@ -395,6 +395,21 @@ public abstract class MessageStoreConformanceTest {
     }
 
     @Test
+    void upsertParticipantNeverLowersWatermarks() {
+        Conversation c = direct("alice", "bob");
+        for (int i = 0; i < 4; i++) {
+            send(c, "alice", "m" + i, null);
+        }
+        Participant stale = store.findParticipant(tenant, c.getId(), "bob").orElseThrow();
+        store.advanceReadState(tenant, c.getId(), "bob", 4L, 3L);
+        store.upsertParticipant(stale.toBuilder().muted(true).build());
+        Participant bob = store.findParticipant(tenant, c.getId(), "bob").orElseThrow();
+        assertThat(bob.isMuted()).isTrue();
+        assertThat(bob.getDeliveredSeq()).isEqualTo(4);
+        assertThat(bob.getReadSeq()).isEqualTo(3);
+    }
+
+    @Test
     void inboxOrderingUnreadAndPaging() throws Exception {
         Conversation first = direct("alice", "bob");
         Conversation second = direct("alice", "carol");

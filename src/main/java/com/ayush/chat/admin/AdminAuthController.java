@@ -48,9 +48,8 @@ public class AdminAuthController {
 
     @PostMapping("/auth/login")
     public LoginResponse login(@RequestBody LoginRequest request, HttpServletRequest http) {
-        String forwarded = http.getHeader("X-Forwarded-For");
-        String ip = forwarded != null ? forwarded.split(",")[0].trim() : http.getRemoteAddr();
-        AdminAuthService.LoginResult result = admins.login(request.email(), request.password(), ip);
+        // getRemoteAddr() already reflects X-Forwarded-For, but only when it came from a trusted proxy.
+        AdminAuthService.LoginResult result = admins.login(request.email(), request.password(), http.getRemoteAddr());
         return new LoginResponse(result.token().token(), result.token().expiresAt(), AdminView.of(result.admin()));
     }
 
@@ -85,7 +84,7 @@ public class AdminAuthController {
     @DeleteMapping("/admins/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@AuthenticationPrincipal AdminPrincipal me, @PathVariable Long id) {
-        admins.delete(id, me.id());
+        admins.delete(id, me.id(), me.role());
         audit.record("admin.deleted", "admin", String.valueOf(id), null, null);
     }
 }

@@ -235,7 +235,7 @@ Events: `message.created`, `message.updated`, `message.deleted`, `conversation.c
 | POST | `/api/v1/conversations/{id}/delivered` | `{seq}` → 204 |
 | POST | `/api/v1/conversations/{id}/typing` | `{typing: true}` → 204 |
 | POST | `/api/v1/media` | multipart `file` → `{mediaId, url, mimeType, size, fileName}` (`media-sharing` for image/video/audio, `file-sharing` otherwise) |
-| GET | `/api/v1/media/{tenant}/{mediaId}?sig=` | → file bytes, or a 302 to a presigned S3 URL. Capability URL: unguessable id + HMAC signature, no auth header needed so it works in `<img src>` |
+| GET | `/api/v1/media/{tenant}/{mediaId}?sig=` | → file bytes, or a 302 to a presigned S3 URL. Non-expiring capability URL (unguessable id + HMAC signature), so it works in `<img src>`. Only raster images, video and audio are served inline; other types (SVG, HTML, PDF, …) download as `application/octet-stream`, and all media responses carry `Content-Security-Policy: sandbox` |
 
 ```json
 Conversation = { "id", "type": "DIRECT|GROUP", "title", "description", "avatarUrl", "createdBy", "createdAt",
@@ -255,6 +255,9 @@ Message = { "id", "conversationId", "seq", "senderId", "clientMsgId", "type": "T
 
 Endpoints: `ws://host/ws` (native WebSocket) and `http://host/ws-sockjs` (SockJS fallback).
 CONNECT headers: `Authorization: Bearer <user JWT>`.
+
+Clients may only `SEND` to `/app/**` and only `SUBSCRIBE` to `/user/queue/events`; anything else is
+rejected with a STOMP `ERROR` frame.
 
 Client → server (`SEND`):
 | Destination | Body |

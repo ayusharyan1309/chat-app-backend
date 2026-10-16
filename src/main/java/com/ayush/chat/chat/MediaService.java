@@ -22,6 +22,7 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -33,6 +34,23 @@ import java.util.regex.Pattern;
 public class MediaService {
 
     private static final Pattern MEDIA_ID = Pattern.compile("^[0-9a-f-]{36}(\\.[a-z0-9]{1,8})?$");
+
+    /**
+     * Types safe to render inline on the platform origin. Anything else (SVG, HTML, XML, PDF, ...)
+     * could carry script and is always served as a download.
+     */
+    private static final Set<String> INLINE_SAFE = Set.of(
+            "image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/heic", "image/heif",
+            "video/mp4", "video/webm", "video/quicktime", "video/3gpp",
+            "audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg", "audio/webm", "audio/wav", "audio/x-wav", "audio/amr");
+
+    public static boolean isInlineSafe(String contentType) {
+        if (contentType == null) {
+            return false;
+        }
+        String base = contentType.toLowerCase(Locale.ROOT).split(";", 2)[0].trim();
+        return INLINE_SAFE.contains(base);
+    }
 
     private final InfrastructureService infrastructure;
     private final TenantDirectory tenants;
@@ -63,7 +81,7 @@ public class MediaService {
             throw ApiException.badRequest("file is required");
         }
         String mime = file.getContentType() == null ? "application/octet-stream" : file.getContentType().toLowerCase(Locale.ROOT);
-        boolean media = mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/");
+        boolean media = isInlineSafe(mime);
         tenant.require(media ? Feature.MEDIA_SHARING : Feature.FILE_SHARING);
         long maxBytes = Math.min((long) tenant.settings().maxFileSizeMb() * 1024 * 1024, properties.getMedia().getMaxUploadBytes());
         if (file.getSize() > maxBytes) {

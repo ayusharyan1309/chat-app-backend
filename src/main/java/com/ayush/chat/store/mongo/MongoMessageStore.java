@@ -434,8 +434,17 @@ public class MongoMessageStore implements MessageStore {
 
     @Override
     public void upsertParticipant(Participant participant) {
-        retryOnDuplicateKey(() -> participants.replaceOne(eq("_id", participantId(participant)),
-                participantDoc(participant), new ReplaceOptions().upsert(true)));
+        // $max keeps watermarks monotonic; everything else is overwritten.
+        Document doc = participantDoc(participant);
+        doc.remove("_id");
+        long delivered = (Long) doc.remove("deliveredSeq");
+        long read = (Long) doc.remove("readSeq");
+        List<Bson> updates = new ArrayList<>();
+        doc.forEach((field, value) -> updates.add(set(field, value)));
+        updates.add(max("deliveredSeq", delivered));
+        updates.add(max("readSeq", read));
+        retryOnDuplicateKey(() -> participants.updateOne(eq("_id", participantId(participant)), combine(updates),
+                new com.mongodb.client.model.UpdateOptions().upsert(true)));
     }
 
     @Override

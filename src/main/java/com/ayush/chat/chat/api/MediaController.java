@@ -44,12 +44,15 @@ public class MediaController {
         if (download.redirect().isPresent()) {
             return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(download.redirect().get())).build();
         }
+        boolean inline = MediaService.isInlineSafe(download.object().contentType());
         return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType(download.object().contentType()))
+                .contentType(inline ? MediaType.parseMediaType(download.object().contentType()) : MediaType.APPLICATION_OCTET_STREAM)
                 .contentLength(download.object().size())
                 .cacheControl(CacheControl.maxAge(Duration.ofDays(30)).cachePrivate().immutable())
                 .header("X-Content-Type-Options", "nosniff")
-                .header(HttpHeaders.CONTENT_DISPOSITION, "inline")
+                // Uploads share the API/dashboard origin: never let one execute script there.
+                .header("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self'; media-src 'self'")
+                .header(HttpHeaders.CONTENT_DISPOSITION, inline ? "inline" : "attachment")
                 .body(new InputStreamResource(download.object().data()));
     }
 }

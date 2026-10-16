@@ -257,6 +257,86 @@ class PlatformIntegrationTest {
     }
 
     @Test
+    void clientsCannotInjectEventsIntoOtherUsersQueues() throws Exception {
+        TenantFixture a = tenant("free");
+        TenantFixture b = tenant("free");
+        String victim = userToken(a, "alice");
+        String attacker = userToken(b, "mallory");
+        try (Socket victimWs = new Socket(victim); Socket attackerWs = new Socket(attacker)) {
+            attackerWs.send("/user/" + a.slug() + "::alice/queue/events",
+                    Map.of("type", "message.new", "data", Map.of("senderId", "bob", "content", "forged")));
+            attackerWs.send("/queue/events", Map.of("type", "message.new"));
+            JsonNode event = victimWs.events.poll(1500, TimeUnit.MILLISECONDS);
+            assertThat(event).as("victim must not receive injected frames").isNull();
+        }
+    }
+
+    @Test
+    void deactivatedUsersLoseRestAccess() throws Exception {
+        TenantFixture t = tenant("free");
+        String alice = userToken(t, "alice");
+        user(alice, "GET", "/api/v1/me", null, 200);
+        server(t.apiKey(), "DELETE", "/api/v1/server/users/alice", null, 204);
+        Response r = call("GET", "/api/v1/conversations", null, Map.of("Authorization", "Bearer " + alice));
+        assertThat(r.status()).isEqualTo(403);
+    }
+
+    @Test
+    void activeContentUploadsAreServedAsSandboxedDownloads() throws Exception {
+        TenantFixture t = tenant("pro");
+        String alice = userToken(t, "alice");
+        String boundary = "----svg" + UUID.randomUUID();
+        String svg = "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>";
+        String body = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"x.svg\"\r\n"
+                + "Content-Type: image/svg+xml\r\n\r\n" + svg + "\r\n--" + boundary + "--\r\n";
+        HttpResponse<String> upload = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/v1/media"))
+                .header("Authorization", "Bearer " + alice)
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(upload.statusCode()).isEqualTo(201);
+        URI url = URI.create(json.readTree(upload.body()).get("url").asText());
+        HttpResponse<String> download = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
+                + url.getRawPath() + "?" + url.getRawQuery())).build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(download.statusCode()).isEqualTo(200);
+        assertThat(download.headers().firstValue("Content-Disposition")).hasValue("attachment");
+        assertThat(download.headers().firstValue("Content-Type")).hasValue("application/octet-stream");
+        assertThat(download.headers().firstValue("Content-Security-Policy").orElse("")).contains("sandbox");
+    }
+
+    @Test
+    void historyBeforeJoiningAndSystemNoticesAreProtected() throws Exception {
+        TenantFixture t = tenant("pro");
+        String alice = userToken(t, "alice");
+        userToken(t, "bob");
+        String carol = userToken(t, "carol");
+        String group = user(alice, "POST", "/api/v1/conversations/group", Map.of("title", "Team", "members", List.of("bob")), 201)
+                .get("id").asText();
+        String secret = user(alice, "POST", "/api/v1/conversations/" + group + "/messages",
+                Map.of("content", "before carol joined"), 201).get("id").asText();
+        user(alice, "POST", "/api/v1/conversations/" + group + "/members", Map.of("userIds", List.of("carol")), 200);
+        user(carol, "PUT", "/api/v1/conversations/" + group + "/messages/" + secret + "/reactions", Map.of("emoji", "👀"), 404);
+        user(carol, "POST", "/api/v1/conversations/" + group + "/messages", Map.of("content", "hi", "replyToId", secret), 400);
+        JsonNode visible = user(carol, "GET", "/api/v1/conversations/" + group + "/messages", null, 200);
+        assertThat(visible.findValuesAsText("content")).doesNotContain("before carol joined");
+
+        String notice = user(alice, "GET", "/api/v1/conversations/" + group + "/messages", null, 200).get(0).get("id").asText();
+        user(alice, "PATCH", "/api/v1/conversations/" + group + "/messages/" + notice, Map.of("content", "rewritten"), 403);
+        user(alice, "DELETE", "/api/v1/conversations/" + group + "/messages/" + notice, null, 403);
+    }
+
+    @Test
+    void deletedAdminsLoseAccessImmediately() throws Exception {
+        String email = "temp-" + UUID.randomUUID().toString().substring(0, 6) + "@admin.test";
+        JsonNode created = admin("POST", "/api/admin/admins",
+                Map.of("email", email, "name", "Temp", "password", "temporary-password-1", "role", "ADMIN"), 201);
+        String token = call("POST", "/api/admin/auth/login", Map.of("email", email, "password", "temporary-password-1"), Map.of())
+                .body().get("token").asText();
+        assertThat(call("GET", "/api/admin/tenants", null, Map.of("Authorization", "Bearer " + token)).status()).isEqualTo(200);
+        admin("DELETE", "/api/admin/admins/" + created.get("id").asLong(), null, 204);
+        assertThat(call("GET", "/api/admin/tenants", null, Map.of("Authorization", "Bearer " + token)).status()).isEqualTo(401);
+    }
+
+    @Test
     void featureGatingAndPlanOverrides() throws Exception {
         TenantFixture t = tenant("free");
         String alice = userToken(t, "alice");

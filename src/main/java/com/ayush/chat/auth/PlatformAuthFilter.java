@@ -1,5 +1,6 @@
 package com.ayush.chat.auth;
 
+import com.ayush.chat.chat.ChatService;
 import com.ayush.chat.core.error.ApiException;
 import com.ayush.chat.tenant.TenantDirectory;
 import com.ayush.chat.tenant.TenantSnapshot;
@@ -9,6 +10,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -35,6 +37,9 @@ public class PlatformAuthFilter extends OncePerRequestFilter {
     private final ApiKeyService apiKeys;
     private final TenantDirectory tenants;
     private final UsageService usage;
+    /** Providers: the filter is built with the security chain, before these services are ready. */
+    private final ObjectProvider<ChatService> chat;
+    private final ObjectProvider<AdminAuthService> admins;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -61,7 +66,11 @@ public class PlatformAuthFilter extends OncePerRequestFilter {
         }
         Object principal = jwt.verify(header.substring(7).trim());
         if (principal instanceof Principals.AdminPrincipal admin) {
-            return Optional.of(token(admin, "ROLE_" + admin.role().name()));
+            // Role comes from the database, not the token: deleted or demoted admins lose access quickly.
+            AdminUser.Role role = admins.getObject().currentRole(admin.id())
+                    .orElseThrow(() -> ApiException.unauthorized("Admin account no longer exists"));
+            Principals.AdminPrincipal current = new Principals.AdminPrincipal(admin.id(), admin.email(), role);
+            return Optional.of(token(current, "ROLE_" + role.name()));
         }
         Principals.ChatUserPrincipal user = (Principals.ChatUserPrincipal) principal;
         TenantSnapshot tenant = tenants.find(user.tenant())
@@ -69,6 +78,7 @@ public class PlatformAuthFilter extends OncePerRequestFilter {
         if (!tenant.isUsable()) {
             throw ApiException.forbidden("Tenant '" + tenant.slug() + "' is " + tenant.status().name().toLowerCase());
         }
+        chat.getObject().requireActiveUser(user.tenant(), user.userId());
         return Optional.of(token(user, "ROLE_CHAT_USER"));
     }
 

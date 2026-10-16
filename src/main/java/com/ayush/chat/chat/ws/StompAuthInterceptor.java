@@ -20,7 +20,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Authenticates STOMP CONNECT frames and locks down what clients may do afterwards:
- * only {@code /user/queue/events} may be subscribed, and every frame needs a user.
+ * only {@code /user/queue/events} may be subscribed, only {@code /app/**} may be sent to, and every
+ * frame needs a user.
  */
 @Component
 @RequiredArgsConstructor
@@ -49,7 +50,15 @@ public class StompAuthInterceptor implements ChannelInterceptor {
                         throw new MessageDeliveryException("Only /user/queue/events can be subscribed");
                     }
                 }
-                case SEND -> requireUser(accessor);
+                case SEND -> {
+                    requireUser(accessor);
+                    // Clients may only address the application, never broker or user destinations:
+                    // SEND /user/<someone>/queue/events would otherwise inject forged events.
+                    String destination = accessor.getDestination();
+                    if (destination == null || !destination.startsWith("/app/")) {
+                        throw new MessageDeliveryException("Clients may only send to /app/** destinations");
+                    }
+                }
                 default -> {
                 }
             }

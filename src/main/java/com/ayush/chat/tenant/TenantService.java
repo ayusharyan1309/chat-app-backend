@@ -206,6 +206,9 @@ public class TenantService {
         if (!List.of("none", "firebase", "jwt").contains(type)) {
             throw ApiException.badRequest("external.type must be none, firebase or jwt");
         }
+        if (!type.equals("none") && !directory.toSnapshot(tenant).has(Feature.EXTERNAL_AUTH)) {
+            throw ApiException.featureDisabled(Feature.EXTERNAL_AUTH.getId());
+        }
         if (type.equals("firebase") && blank(in.firebaseProjectId())) {
             throw ApiException.badRequest("firebaseProjectId is required for Firebase auth");
         }

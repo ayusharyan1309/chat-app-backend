@@ -55,7 +55,11 @@ public class MetricsService {
 
     private void add(String metric, long delta) {
         long minute = System.currentTimeMillis() / 60_000;
-        pending.computeIfAbsent(metric + ":" + minute, k -> new AtomicLong()).addAndGet(delta);
+        pending.compute(metric + ":" + minute, (k, v) -> {
+            AtomicLong target = v == null ? new AtomicLong() : v;
+            target.addAndGet(delta);
+            return target;
+        });
     }
 
     @Scheduled(fixedDelay = 5_000)
@@ -68,7 +72,11 @@ public class MetricsService {
             try {
                 infrastructure.cache().increment("metrics:" + key, value.get(), RETENTION);
             } catch (Exception e) {
-                pending.computeIfAbsent(key, k -> new AtomicLong()).addAndGet(value.get());
+                pending.compute(key, (k, v) -> {
+                    AtomicLong target = v == null ? new AtomicLong() : v;
+                    target.addAndGet(value.get());
+                    return target;
+                });
                 log.debug("Metrics flush failed: {}", e.getMessage());
             }
         }

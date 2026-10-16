@@ -37,8 +37,11 @@ public class RealtimeGateway {
     record Delivery(String tenant, List<String> users, ChatEvent event) {
     }
 
-    /** Cluster control messages (tenant suspended, user deactivated, ...). */
-    public record ControlMessage(String type, String tenant, String userId) {
+    /** Cluster control messages (tenant suspended, user deactivated, cache invalidations, ...). */
+    public record ControlMessage(String type, String tenant, String userId, String ref) {
+        public ControlMessage(String type, String tenant, String userId) {
+            this(type, tenant, userId, null);
+        }
     }
 
     @PostConstruct

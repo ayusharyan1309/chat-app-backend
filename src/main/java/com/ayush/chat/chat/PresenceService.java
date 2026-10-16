@@ -6,6 +6,8 @@ import com.ayush.chat.core.cluster.ClusterService;
 import com.ayush.chat.core.config.InfrastructureService;
 import com.ayush.chat.core.config.TenantConnectors;
 import com.ayush.chat.core.util.Json;
+import com.ayush.chat.tenant.Feature;
+import com.ayush.chat.tenant.TenantDirectory;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +42,7 @@ public class PresenceService {
     private final TenantConnectors connectors;
     private final ClusterService cluster;
     private final RealtimeGateway gateway;
+    private final TenantDirectory tenants;
 
     /** userKey -> local session ids */
     private final Map<String, Set<String>> localSessions = new ConcurrentHashMap<>();
@@ -151,6 +154,9 @@ public class PresenceService {
     /** Replace the watch list of a session and send the current state of every watched user. */
     public void watch(String sessionId, ChatUserPrincipal principal, Collection<String> userIds) {
         unwatchAll(sessionId);
+        if (!tenants.get(principal.tenant()).has(Feature.PRESENCE)) {
+            return;
+        }
         List<String> limited = userIds.stream().filter(id -> id != null && !id.isBlank()).distinct().limit(MAX_WATCHED).toList();
         Set<String> keys = ConcurrentHashMap.newKeySet();
         for (String id : limited) {

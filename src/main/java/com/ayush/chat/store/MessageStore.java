@@ -92,7 +92,11 @@ public interface MessageStore extends Connector {
     /** Returns the participant record whether active or not. */
     Optional<Participant> findParticipant(String tenantId, String conversationId, String userId);
 
-    /** Insert or replace a participant record (role, settings, re-join with leftAt=null). */
+    /**
+     * Insert or replace a participant record (role, settings, re-join with leftAt=null).
+     * Watermarks (deliveredSeq/readSeq) are merged with max(): an upsert built from a stale read
+     * must never move a receipt backwards.
+     */
     void upsertParticipant(Participant participant);
 
     /** Mark a participant as having left (sets leftAt). */
